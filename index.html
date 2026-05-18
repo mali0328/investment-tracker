@@ -110,7 +110,7 @@
     const defaultProducts = [
       { id: 'P1', name: '鑫穩健-A1', currency: 'TWD' },
       { id: 'P2', name: 'e指標-A1', currency: 'TWD' },
-      { id: 'P3', name: '美股科技巨頭', currency: 'USD' }
+      { id: 'P3', name: '環球總報酬', currency: 'TWD' }
     ];
 
     const defaultClientState = {
@@ -141,6 +141,10 @@
       const [isSaving, setIsSaving] = useState(false);
       const [savedImage, setSavedImage] = useState(null);
       const [deleteConfirm, setDeleteConfirm] = useState({ show: false, id: null, type: '' });
+      
+      // 自訂背景圖片與磨砂玻璃不透明度控制
+      const [bgImage, setBgImage] = useState(null);
+      const [bgOpacity, setBgOpacity] = useState(0.85); // 預設 85% 輕透度
       
       const [savedThemes, setSavedThemes] = useState(() => {
         try { const local = localStorage.getItem('investment_color_themes_v6'); return local ? JSON.parse(local) : []; } catch (e) { return []; }
@@ -239,6 +243,7 @@
       });
       const finalTotal = accountTotals.reduce((s, acc) => s + acc.totalDividend, 0);
 
+      // 動態彙整保單基本資料
       const groupedByPolicy = [];
       const policyMap = {};
       accountTotals.forEach(acc => {
@@ -253,11 +258,49 @@
         if (policyMap[pKey].currency !== acc.currency) policyMap[pKey].currency = 'MIXED';
       });
 
+// 設定動態磨砂玻璃卡片背景與柔和陰影樣式
+      const cardStyle = {
+        background: bgImage ? `rgba(255, 255, 255, ${bgOpacity})` : '#ffffff',
+        borderRadius: '24px',
+        padding: '24px',
+        boxShadow: bgImage ? '0 10px 30px rgba(0,0,0,0.06)' : '0 20px 40px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.02)',
+        border: bgImage ? '1px solid rgba(255,255,255,0.4)' : '1px solid #f1f5f9',
+        display: 'flex',
+        flexDirection: 'column',
+        transition: 'all 0.3s ease',
+        backdropFilter: bgImage ? 'blur(10px)' : 'none',
+      };
+
+  // 動態整合 monthlyData 且依據「保單維度」進行圖表數值堆疊
       let currentCum = 0;
       const monthlyData = rawMonthlyData.map(d => {
         let sumThisMonth = 0;
         const newD = { month: d.month };
-        accounts.forEach(acc => { const val = Number(d[acc.id]) || 0; sumThisMonth += val; newD[acc.id] = val; newD[`${acc.id}_chart`] = val || null; });
+        
+        // 初始化保單當月累加值為 0
+        groupedByPolicy.forEach(group => {
+          newD[`${group.key}_chart`] = 0;
+        });
+
+        accounts.forEach(acc => { 
+          const val = Number(d[acc.id]) || 0; 
+          sumThisMonth += val; 
+          newD[acc.id] = val; 
+
+          // 累加到所屬的保單
+          const pKey = (acc.acc || '').trim() || acc.id;
+          if (newD[`${pKey}_chart`] !== undefined) {
+            newD[`${pKey}_chart`] += val;
+          }
+        });
+
+        // 將 0 轉換成 null 避免圖表渲染不必要的空白長條
+        groupedByPolicy.forEach(group => {
+          if (newD[`${group.key}_chart`] === 0) {
+            newD[`${group.key}_chart`] = null;
+          }
+        });
+
         currentCum += sumThisMonth;
         newD.TotalCum = currentCum;           
         newD.monthlyTotal = sumThisMonth;     
@@ -295,6 +338,20 @@ rawMonthlyData.forEach(row => {
       const handleRemoveEvent = (id) => setEventRecords(prev => prev.filter(e => e.id !== id));
       const handleAddEvent = () => setEventRecords(prev => [...prev, { id: Date.now(), icon: '💰', date: '', amount: '0', target: accounts[0]?.id || '', currency: 'TWD' }]);
       
+ // 上傳背景底圖檔案，並將其轉為 Base64
+      const handleBgUpload = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          setBgImage(event.target.result);
+        };
+        reader.readAsDataURL(file);
+      };
+
+
+
+
       const confirmDeleteAction = () => {
         if (deleteConfirm.type === 'event') handleRemoveEvent(deleteConfirm.id);
         else if (deleteConfirm.type === 'theme') { const nt = savedThemes.filter(t => t.id !== deleteConfirm.id); setSavedThemes(nt); localStorage.setItem('investment_color_themes_v6', JSON.stringify(nt)); }
@@ -322,6 +379,11 @@ rawMonthlyData.forEach(row => {
           setIsSaving(false);
           return;
         }
+ // 強制模糊取消聚焦目前正在修改中的輸入欄位，避免游標被拍進高清圖中
+        if (document.activeElement && typeof document.activeElement.blur === 'function') {
+          document.activeElement.blur();
+        }
+
 
         // 延長等待時間至 600ms，確保圖表動畫完全靜止，DOM 更新完畢
         setTimeout(() => {
@@ -334,8 +396,13 @@ rawMonthlyData.forEach(row => {
           window.html2canvas(element, { 
             scale: 2, // 降回黃金 2 倍率，完美防範 Apple/Safari 的畫布記憶體溢出崩潰
             useCORS: true, 
-            backgroundColor: '#ffffff', 
-            logging: false 
+            backgroundColor: null, 
+            logging: false ,
+            onclone: (clonedDoc) => {
+              // 在克隆體上添加隱藏邊框等輔助焦點元素的 HTML 容器類
+              const target = clonedDoc.querySelector('[ref="reportRef"]') || clonedDoc.body;
+              target.classList.add('html2canvas-container');
+            }
           }).then(cvs => {
             setSavedImage(cvs.toDataURL('image/jpeg', 0.95));
             setIsSaving(false);
@@ -344,7 +411,7 @@ rawMonthlyData.forEach(row => {
             alert('圖片生成失敗，可能是因為裝置記憶體不足。您可以直接使用系統截圖工具！');
             setIsSaving(false);
           });
-        }, 600);
+        }, 500);
       };
 
       const handleExportData = () => {
@@ -662,7 +729,7 @@ rawMonthlyData.forEach(row => {
             {/* ==================================================== 📊 儀表板分頁 ==================================================== */}
             {activeTab === 'dashboard' && (
               <>
-                {/* 華麗控制面板 */}
+                {/* 控制面板 */}
                 <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px 28px', border: '1px solid #ffffff' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '20px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap', flex: '1 1 350px' }}>
@@ -689,6 +756,31 @@ rawMonthlyData.forEach(row => {
                       <button onClick={handleSaveImage} disabled={isSaving} style={{ background: isSaving ? '#cbd5e1' : 'linear-gradient(135deg, #f6d365 0%, #fda085 100%)', color: '#fff', border: 'none', padding: '12px 28px', borderRadius: '14px', fontWeight: '900', boxShadow: isSaving ? 'none' : '0 10px 25px rgba(253, 160, 133, 0.4), inset 0 2px 4px rgba(255,255,255,0.4)', cursor: 'pointer', whiteSpace: 'nowrap', fontSize: '15px', textShadow: '0 1px 2px rgba(0,0,0,0.1)', transition: 'all 0.2s', transform: isSaving ? 'scale(0.98)' : 'scale(1)' }}>📸 產生高清圖片</button>
                     </div>
                   </div>
+
+                  {/* 🖼️ 客製化報表背景圖片與磨砂玻璃滑桿 */}
+                  <div style={{ width: '100%', borderTop: '2px dashed #f1f5f9', paddingTop: '16px', display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: '#f8fafc', padding: '8px 16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                      <span style={{ color: '#475569', fontSize: '14px', whiteSpace: 'nowrap', fontWeight: 'bold' }}>🖼️ 報表自訂底圖：</span>
+                      <button onClick={() => document.getElementById('bgUploadInput').click()} style={{ background: '#3b82f6', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: '8px', fontSize: '13px', cursor: 'pointer', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(59,130,246,0.1)' }}>
+                        📤 上傳底圖 
+                      </button>
+                      <input type="file" id="bgUploadInput" accept="image/*" style={{ display: 'none' }} onChange={handleBgUpload} />
+                      
+                      {bgImage && (
+                        <>
+                          <button onClick={() => setBgImage(null)} style={{ background: '#fee2e2', color: '#ef4444', border: 'none', padding: '6px 14px', borderRadius: '8px', fontSize: '13px', cursor: 'pointer', fontWeight: 'bold', marginLeft: '8px' }}>
+                            清除底圖
+                          </button>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: '16px', borderLeft: '1px solid #cbd5e1', paddingLeft: '16px' }}>
+                            <span style={{ fontSize: '13px', color: '#475569', fontWeight: 'bold' }}>卡片透明度 (玻璃感)：</span>
+                            <input type="range" min="0.2" max="1" step="0.05" value={bgOpacity} onChange={e => setBgOpacity(parseFloat(e.target.value))} style={{ width: '100px', cursor: 'pointer' }} />
+                            <span style={{ fontSize: '13px', color: '#2563eb', fontWeight: '900', width: '40px' }}>{Math.round(bgOpacity * 100)}%</span>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
                   
                   {/* 分區字體控制中心 */}
                   <div style={{ width: '100%', borderTop: '2px dashed #f1f5f9', paddingTop: '16px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
@@ -716,10 +808,18 @@ rawMonthlyData.forEach(row => {
                 {/* --- 報表渲染外層 --- */}
                 <div style={{ width: '100%', overflowX: 'auto', borderRadius: '28px', boxShadow: '0 30px 60px rgba(0,0,0,0.08)', WebkitOverflowScrolling: 'touch', background: '#ffffff', border: '1px solid rgba(255,255,255,0.8)' }}>
                   
-                  {/* 報表本體：1200px (清爽純淨白底) */}
-                  <div ref={reportRef} style={{ width: '1200px', minWidth: '1200px', background: 'linear-gradient(180deg, #ffffff 0%, #fcfdfe 100%)', padding: '48px', boxSizing: 'border-box' }}>
+                  {/* 報表本體：1200px (支援客製化底圖) */}
+                  <div ref={reportRef} style={{ 
+                    width: '1200px', 
+                    minWidth: '1200px', 
+                    background: bgImage ? `url(${bgImage}) no-repeat center center / cover` : 'linear-gradient(180deg, #ffffff 0%, #fcfdfe 100%)', 
+                    padding: '48px', 
+                    boxSizing: 'border-box',
+                    transition: 'background 0.3s ease',
+                    borderRadius: '24px'
+                  }}>
                     
-                    {/* Header */}
+                    {/* Header 頁首資訊 */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', borderBottom: `4px solid ${theme.lineTotal}`, paddingBottom: '20px', marginBottom: '32px' }}>
                       <div>
                         <div style={{ fontSize: 13 * sHeader, letterSpacing: '4px', color: '#64748b', fontWeight: '900', textTransform: 'uppercase', marginBottom: '6px' }}>
@@ -750,50 +850,91 @@ rawMonthlyData.forEach(row => {
   gap: '16px', 
   width: '100%' 
 }}>
-                      {/* 1. 左側：全年累積現金給付 */}
-                      <div style={{ ...cardStyle, background: `linear-gradient(135deg, #EA7500, #EA7500)`, color: C.white, border: 'none', padding: '32px 24px', boxShadow: '0 15px 30px rgba(0,0,0,0.1), inset 0 2px 4px rgba(255,255,255,0.1)', textAlign: 'center' }}>
-                        <div style={{ fontSize: 20 * sKpi, color: 'rgba(255,255,255,0.8)', letterSpacing: '2px', marginBottom: '12px', fontWeight: '800' }}>
-                          <EditableTitle value={getTitle('kpi_cash', `累積現金給付`)} onSave={v => updateTitle('kpi_cash', v)} hoverBorder="1px dashed rgba(255,255,255,0.6)" />
+                      {/* 1. 全年累積現金給付 KPI 卡片 */}
+                        <div style={{ 
+                          ...cardStyle, 
+                          background: 'linear-gradient(135deg, #EA7500, #EA7500)', 
+                          color: C.white, 
+                          border: 'none', 
+                          padding: '32px 24px', 
+                          boxShadow: '0 10px 25px rgba(234,88,12,0.25)', 
+                          textAlign: 'center',
+                          backgroundColor: 'transparent'
+                        }}>
+                          <div style={{ fontSize: 20 * sKpi, color: 'rgba(255,255,255,0.85)', letterSpacing: '2px', marginBottom: '12px', fontWeight: '800' }}>
+                            <EditableTitle value={getTitle('kpi_cash', `累積已領`)} onSave={v => updateTitle('kpi_cash', v)} hoverBorder="1px dashed rgba(255,255,255,0.6)" />
+                          </div>
+                          <div style={{ fontSize: 42 * sKpi, fontWeight: 800, textShadow: '0 2px 8px rgba(0,0,0,0.15)' }}>
+                            <Counter target={totalCash} prefix={`${globalSym} `} />
+                          </div>
+                          <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'center' }}>
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.85 }}>
+                              <line x1="12" y1="1" x2="12" y2="23"></line>
+                              <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                            </svg>
+                          </div>
                         </div>
-                        <div style={{ fontSize: 42 * sKpi, fontWeight: 800, textShadow: '0 2px 10px rgba(0,0,0,0.2)' }}>
-                          <Counter target={totalCash} prefix={`${globalSym} `} />
+
+                        {/* 2. 全年累積單位數總額 KPI 卡片 */}
+                        <div style={{ 
+                          ...cardStyle, 
+                          background: 'linear-gradient(135deg, #EA7500, #EA7500)', 
+                          color: C.white, 
+                          border: 'none', 
+                          padding: '32px 24px', 
+                          boxShadow: '0 10px 25px rgba(2,132,199,0.25)', 
+                          textAlign: 'center',
+                          backgroundColor: 'transparent'
+                        }}>
+                          <div style={{ fontSize: 20 * sKpi, color: 'rgba(255,255,255,0.85)', letterSpacing: '2px', marginBottom: '12px', fontWeight: '800' }}>
+                            <EditableTitle value={getTitle('kpi_units', `累積單位數總額`)} onSave={v => updateTitle('kpi_units', v)} hoverBorder="1px dashed rgba(255,255,255,0.6)" />
+                          </div>
+                          <div style={{ fontSize: 42 * sKpi, fontWeight: 900, textShadow: '0 2px 8px rgba(0,0,0,0.15)' }}>
+                            <Counter target={totalUnits} prefix={`${globalSym} `} />
+                          </div>
+                          <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'center' }}>
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.85 }}>
+                              <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
+                              <polyline points="17 6 23 6 23 12"></polyline>
+                            </svg>
+                          </div>
                         </div>
-                        <div style={{ marginTop: '12px', fontSize: '20px', opacity: 0.6 }}>💵</div>
+
+                        {/* 3. 全年累積總撥回 KPI 卡片 */}
+                        <div style={{ 
+                          ...cardStyle, 
+                          background: 'linear-gradient(135deg, #F75000, #F75000)', 
+                          color: C.white, 
+                          border: 'none', 
+                          padding: '32px 24px', 
+                          boxShadow: '0 12px 30px rgba(124,58,237,0.3)', 
+                          textAlign: 'center',
+                          backgroundColor: 'transparent'
+                        }}>
+                          <div style={{ fontSize: 20 * sKpi, color: 'rgba(255,255,255,0.9)', letterSpacing: '2px', marginBottom: '12px', fontWeight: '800' }}>
+                            <EditableTitle value={getTitle('kpi_total', `合計`)} onSave={v => updateTitle('kpi_total', v)} hoverBorder="1px dashed rgba(255,255,255,0.6)" />
+                          </div>
+                          <div style={{ fontSize: 42 * sKpi, fontWeight: 900, textShadow: '0 4px 12px rgba(0,0,0,0.2)' }}>
+                            <Counter target={finalTotal} prefix={`${globalSym} `} />
+                          </div>
+                          <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'center' }}>
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.9 }}>
+                              <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path>
+                            </svg>
+                          </div>
+                        </div>
                       </div>
 
-                      {/* 2. 中間：全年累積單位數總額 */}
-                      <div style={{ ...cardStyle, background: `linear-gradient(135deg, #EA7500, #EA7500)`, color: C.white, border: 'none', padding: '32px 24px', boxShadow: '0 15px 30px rgba(0,0,0,0.1), inset 0 2px 4px rgba(255,255,255,0.1)', textAlign: 'center' }}>
-                        <div style={{ fontSize: 20 * sKpi, color: 'rgba(255,255,255,0.8)', letterSpacing: '2px', marginBottom: '12px', fontWeight: '800' }}>
-                          <EditableTitle value={getTitle('kpi_units', `累積單位數總額`)} onSave={v => updateTitle('kpi_units', v)} hoverBorder="1px dashed rgba(255,255,255,0.6)" />
-                        </div>
-                        <div style={{ fontSize: 42 * sKpi, fontWeight: 900, textShadow: '0 2px 10px rgba(0,0,0,0.2)' }}>
-                          <Counter target={totalUnits} prefix={`${globalSym} `} />
-                        </div>
-                        <div style={{ marginTop: '12px', fontSize: '20px', opacity: 0.6 }}>📈</div>
-                      </div>
-
-                      {/* 3. 右側：全年累積總撥回 */}
-                      <div style={{ ...cardStyle, background: `linear-gradient(135deg, #F75000,#F75000)`, color: C.white, border: 'none', padding: '32px 24px', boxShadow: '0 25px 50px rgba(0,0,0,0.15), inset 0 2px 4px rgba(255,255,255,0.2)', textAlign: 'center' }}>
-                        <div style={{ fontSize: 20 * sKpi, color: 'rgba(255,255,255,0.9)', letterSpacing: '2px', marginBottom: '12px', fontWeight: '800' }}>
-                          <EditableTitle value={getTitle('kpi_total', `全年累積總撥回`)} onSave={v => updateTitle('kpi_total', v)} hoverBorder="1px dashed rgba(255,255,255,0.6)" />
-                        </div>
-                        <div style={{ fontSize: 42 * sKpi, fontWeight: 900, textShadow: '0 4px 15px rgba(0,0,0,0.3)' }}>
-                          <Counter target={finalTotal} prefix={`${globalSym} `} />
-                        </div>
-                        <div style={{ marginTop: '12px', fontSize: '20px', opacity: 0.8 }}>🏆</div>
-                      </div>
-                      </div>
-
-
-                      {/* 動態合併保單貢獻卡 */}
-                      <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fit, minmax(200px, 1fr))`, gap: '24px' }}>
+                      {/* 動態合併保單貢獻卡 (已使用註解隱藏) */}
+                      {/* 
+                       <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fit, minmax(200px, 1fr))`, gap: '24px' }}>
                         {groupedByPolicy.map((gAcc, idx) => {
                            const pct = finalTotal === 0 ? 0 : ((gAcc.totalDividend / finalTotal) * 100).toFixed(1);
                            const accSym = gAcc.currency === 'MIXED' ? '$' : getSym(gAcc.currency || 'TWD');
                            const displayName = gAcc.policyNo !== '未命名保單' ? `保單 ${gAcc.policyNo}` : gAcc.names.join(' + ');
 
                            return (
-                             <div key={gAcc.key} style={{ ...cardStyle, background: `linear-gradient(135deg, ${theme.heroBg}, ${theme.heroBg}E6)`, color: C.white, border: 'none', boxShadow: '0 15px 30px rgba(0,0,0,0.1), inset 0 2px 4px rgba(255,255,255,0.2)' }}>
+                             <div key={gAcc.key} style={{ ...cardStyle, background: `linear-gradient(135deg,${theme.heroBg}, ${theme.heroBg}E6)`, color: C.white, border: 'none', boxShadow: '0 15px 30px rgba(0,0,0,0.1), inset 0 2px 4px rgba(255,255,255,0.2)' }}>
                                <div style={{ fontSize: 13 * sKpi, color: 'rgba(255,255,255,0.8)', marginBottom: '8px', fontWeight: 'bold' }}>
                                  {displayName}
                                </div>
@@ -807,23 +948,24 @@ rawMonthlyData.forEach(row => {
                                  </div>
                                </div>
                              </div>
-                           );
-                        })}
-                      </div>
-                    </div>
+                           );  
+                        })}    
+                      </div> 
+                      */}
+                    </div> 
 
                     {/* 下方視圖*/}
                     <div style={{ display: 'grid', flexDirection: 'column', gap: '24px' }}>
                       
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
                         {/* 圖表卡片 */}
-                        <div style={{ ...cardStyle, flex: 1, padding: '32px' }}>
+                        <div style={{ ...cardStyle, padding: '32px' }}>
                           <div style={{ fontSize: 18 * sChart, fontWeight: 900, color: '#0f172a', marginBottom: '24px', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', alignItems: 'center' }}>
-                            <span><EditableTitle value={getTitle('chart', '📊 各標的每月撥回與再投入累積')} onSave={v => updateTitle('chart', v)} /></span>
-                            <div style={{ fontSize: 12 * sChart, display: 'flex', flexWrap: 'wrap', gap: '12px', fontWeight: 'bold', background: '#f8fafc', padding: '6px 12px', borderRadius: '12px' }}>
-                              {accounts.map(acc => (
-                                 <span key={acc.id} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                   <span style={{ color: theme.accountColors[acc.id], fontSize: '16px' }}>■</span> {acc.name || '未選擇'}
+                            <span><EditableTitle value={getTitle('chart', '📊 各保單每月撥回與再投入累積')} onSave={v => updateTitle('chart', v)} /></span>
+                            <div style={{ fontSize: 12 * sChart, display: 'flex', flexWrap: 'wrap', gap: '12px', fontWeight: 'bold', background:bgImage ? `rgba(248, 250, 252, ${bgOpacity})` : '#f8fafc', padding: '6px 12px', borderRadius: '12px' }}>
+                              {groupedByPolicy.map(group => (
+                                 <span key={group.key} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                   <span style={{ color: group.color, fontSize: '16px' }}>■</span> 保單 {group.policyNo}
                                  </span>
                               ))}
                               <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -831,52 +973,83 @@ rawMonthlyData.forEach(row => {
                               </span>
                             </div>
                           </div>
+
+                          {/* 趨勢累積柱狀、折線圖：改採用「每張保單累積」呈現 */}
                           <div style={{ height: '360px', width: '100%', marginBottom: '24px' }}>
                             <ResponsiveContainer width="100%" height="100%">
-                              <ComposedChart data={chartDisplayData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                              <ComposedChart data={monthlyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
                                 <XAxis dataKey="month" tick={{ fontSize: 12 * sChart, fill: '#64748b', fontWeight: 'bold' }} axisLine={{ stroke: '#cbd5e1' }} tickLine={false} />
                                 <YAxis yAxisId="left" tick={{ fontSize: 11 * sChart, fill: '#64748b', fontWeight: 'bold' }} axisLine={false} tickLine={false} />
                                 <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 * sChart, fill: theme.lineTotal, fontWeight: '900' }} axisLine={false} tickLine={false} />
                                 <Tooltip itemStyle={{ fontSize: 13 * sChart, fontWeight: 'bold' }} labelStyle={{ fontSize: 13 * sChart, color: '#0f172a', fontWeight: '900', marginBottom: '8px' }} contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 15px 35px rgba(0,0,0,0.1)', padding: '16px' }} formatter={(v, n) => {
                                    if (n === 'TotalCum') return [`${globalSym} ${Number(v).toLocaleString()}`, '總累計'];
+                                   
+                                   // 解析保單柱狀項名稱
+                                   if (n.startsWith('policy_')) {
+                                     const pKey = n.replace('policy_', '');
+                                     const pGroup = groupedByPolicy.find(g => g.key === pKey);
+                                     return [`${pGroup ? getSym(pGroup.currency || 'TWD') : '$'} ${Number(v).toLocaleString()}`, pGroup ? `保單 ${pGroup.policyNo}` : n];
+                                   }
+                                   
                                    const acc = accounts.find(a => a.id === n);
                                    return [`${acc ? getSym(acc.currency || 'TWD') : '$'} ${Number(v).toLocaleString()}`, acc?.name || n];
                                 }} />
                                 
-                                {accounts.map((acc, idx) => (
-                                  <Bar key={acc.id} yAxisId="left" dataKey={`${acc.id}_chart`} name={acc.id} stackId="a" fill={theme.accountColors[acc.id]} radius={idx === accounts.length - 1 ? [6, 6, 0, 0] : [0, 0, 0, 0]} isAnimationActive={!isSaving} />
+
+                                 {/* 保單堆疊柱狀渲染 */}
+                                {groupedByPolicy.map((group, idx) => (
+                                  <Bar key={group.key} yAxisId="left" dataKey={`${group.key}_chart`} name={group.key} stackId="a" fill={group.color} radius={idx === groupedByPolicy.length - 1 ? [6, 6, 0, 0] : [0, 0, 0, 0]} isAnimationActive={!isSaving} />
                                 ))}
                                 <Line yAxisId="right" type="monotone" dataKey="TotalCum" name="TotalCum" stroke={theme.lineTotal} strokeWidth={4} dot={{ r: 5, fill: '#fff', stroke: theme.lineTotal, strokeWidth: 3 }} activeDot={{ r: 8, fill: theme.lineTotal, stroke: '#fff', strokeWidth: 2 }} isAnimationActive={!isSaving} />
                               </ComposedChart>
                             </ResponsiveContainer>
                           </div>
                           
-                          {/* 當月總計表格 */}
-                          <div style={{ overflowX: 'auto', borderRadius: '16px', border: `1px solid #e2e8f0`, boxShadow: '0 4px 15px rgba(0,0,0,0.02)' }}>
+                          {/* 當月撥回明細表：相同的保單號碼自動合併欄位 */}
+                          <div style={{ overflowX: 'auto', borderRadius: '16px', border: `1px solid #e2e8f0`, boxShadow: '0 4px 15px rgba(0,0,0,0.02)', background: bgImage ? `rgba(255, 255, 255, 0.4)` : '#ffffff' }}>
                             <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center', fontSize: 12 * sChart * colScales.monthly, whiteSpace: 'nowrap' }}>
                               <thead>
-                                <tr style={{ background: '#f8fafc' }}>
+                                <tr style={{ background: bgImage ? 'rgba(248, 250, 252, 0.6)' : '#f8fafc' }}>
+                                  <th style={{ padding: '12px', color: '#64748b', borderBottom: '2px solid #e2e8f0' }}>保單號碼</th>
                                   <th style={{ padding: '12px', color: '#64748b', borderBottom: '2px solid #e2e8f0' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
                                       項目 <ScaleButtons scaleKey="monthly" />
                                     </div>
                                   </th>
-                                  {chartDisplayData.map((d, i) => (<th key={i} style={{ padding: '12px', color: '#334155', borderBottom: '2px solid #e2e8f0' }}>{d.month}</th>))}
+                                  {monthlyData.map((d, i) => (<th key={i} style={{ padding: '12px', color: '#334155', borderBottom: '2px solid #e2e8f0' }}>{d.month}</th>))}
                                 </tr>
                               </thead>
                               <tbody>
-                                {accounts.map(acc => (
-                                  <tr key={acc.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                                    <td style={{ padding: '12px', fontWeight: '900', color: theme.accountColors[acc.id], background: '#ffffff' }}>{acc.name || '未選擇標的'}</td>
-                                    {chartDisplayData.map((d, i) => (<td key={i} style={{ padding: '12px', color: '#475569', fontWeight: 'bold' }}>{Number(d[acc.id] || 0).toLocaleString()}</td>))}
-                                  </tr>
-                                ))}
-                                <tr style={{ background: '#fefce8' }}>
-                                  <td style={{ padding: '12px', fontWeight: '900', color: theme.lineTotal, borderTop: '2px solid #fde68a' }}>
+                                {groupedByPolicy.map((group, gIdx) => {
+                                  return group.accounts.map((acc, aIdx) => {
+                                    const isLastInGroup = aIdx === group.accounts.length - 1;
+                                    return (
+                                      <tr key={acc.id} style={{ borderBottom: isLastInGroup ? '2px solid #cbd5e1' : '1px dashed #e2e8f0' }}>
+                                        {/* 相同保單號碼合而為一，垂直置中 */}
+                                        {aIdx === 0 && (
+                                          <td rowSpan={group.accounts.length} style={{ padding: '12px', fontWeight: '900', color: '#0f172a', verticalAlign: 'middle', borderRight: '1px solid #cbd5e1', background: bgImage ? 'rgba(255,255,255,0.2)' : '#ffffff' }}>
+                                            {group.policyNo}
+                                          </td>
+                                        )}
+                                        {/* 基金配色直接與所屬保單連動 (group.color) */}
+                                        <td style={{ padding: '12px', fontWeight: '900', color: group.color, background: bgImage ? 'rgba(255,255,255,0.1)' : '#ffffff', borderRight: '1px solid #f1f5f9' }}>
+                                          {acc.name || '未選擇標的'}
+                                        </td>
+                                        {monthlyData.map((d, i) => (
+                                          <td key={i} style={{ padding: '12px', color: '#475569', fontWeight: 'bold' }}>
+                                            {Number(d[acc.id] || 0).toLocaleString()}
+                                          </td>
+                                        ))}
+                                      </tr>
+                                    );
+                                  });
+                                })}
+                                <tr style={{ background: bgImage ? 'rgba(254, 252, 232, 0.7)' : '#fefce8' }}>
+                                  <td colSpan={2} style={{ padding: '12px', fontWeight: '900', color: theme.lineTotal, borderTop: '2px solid #fde68a', textAlign: 'center' }}>
                                     <EditableTitle value={getTitle('tableTotal', '當月總計金額')} onSave={v => updateTitle('tableTotal', v)} hoverBorder={`1px dashed ${theme.lineTotal}`} />
                                   </td>
-                                  {chartDisplayData.map((d, i) => (<td key={i} style={{ padding: '12px', fontWeight: '900', color: theme.lineTotal, borderTop: '2px solid #fde68a' }}>{Number(d.monthlyTotal || 0).toLocaleString()}</td>))}
+                                  {monthlyData.map((d, i) => (<td key={i} style={{ padding: '12px', fontWeight: '900', color: theme.lineTotal, borderTop: '2px solid #fde68a' }}>{Number(d.monthlyTotal || 0).toLocaleString()}</td>))}
                                 </tr>
                               </tbody>
                             </table>
@@ -886,15 +1059,15 @@ rawMonthlyData.forEach(row => {
 
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
                         
-                        {/* 帳戶總覽 */}
+                        {/* 📑 帳戶總覽明細卡片 */}
                         <div style={{ ...cardStyle, padding: 0, overflow: 'hidden' }}>
                           <div style={{ background: `linear-gradient(135deg, ${theme.heroBg}, ${theme.heroBg}E6)`, color: C.white, padding: '16px 24px', fontSize: 16 * sTable, fontWeight: '900', display: 'flex', alignItems: 'center' }}>
                             <EditableTitle value={getTitle('overview', '📑 帳戶總覽明細')} onSave={v => updateTitle('overview', v)} hoverBorder="1px dashed rgba(255,255,255,0.6)" />
                           </div>
-                          <div style={{ overflowX: 'auto', background: '#ffffff' }}>
+                          <div style={{ overflowX: 'auto', background: bgImage ? 'rgba(255,255,255,0.4)' : '#ffffff' }}>
                             <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '550px' }}>
                               <thead>
-                                <tr style={{ background: '#f8fafc', color: '#64748b', fontSize: 13 * sTable }}>
+                                <tr style={{ background: bgImage ? 'rgba(248, 250, 252, 0.6)' : '#f8fafc', color: '#64748b', fontSize: 13 * sTable }}>
                                   <th style={{ padding: '16px 20px', borderBottom: '2px solid #e2e8f0' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>保單號碼 <ScaleButtons scaleKey="policy" /></div>
                                   </th>
@@ -920,25 +1093,26 @@ rawMonthlyData.forEach(row => {
                                     const isLastInGroup = aIdx === group.accounts.length - 1;
                                     
                                     return (
-                                      <tr key={acc.id} style={{ borderBottom: isLastInGroup ? `2px solid #f1f5f9` : '1px dashed #e2e8f0' }}>
+                                      <tr key={acc.id} style={{ borderBottom: isLastInGroup ? `2px solid #cbd5e1` : '1px dashed #e2e8f0' }}>
                                         {aIdx === 0 && (
-                                          <td rowSpan={group.accounts.length} style={{ padding: '16px 20px', fontWeight: '900', color: '#0f172a', verticalAlign: 'middle', borderRight: '2px solid #f8fafc', width: '20%', fontSize: 14 * sTable * colScales.policy }}>
+                                          <td rowSpan={group.accounts.length} style={{ padding: '16px 20px', fontWeight: '900', color: '#0f172a', verticalAlign: 'middle', borderRight: '2px solid rgba(248, 250, 252, 0.6)', width: '20%', fontSize: 14 * sTable * colScales.policy }}>
                                             {group.policyNo}
                                           </td>
                                         )}
                                         {aIdx === 0 && (
-                                          <td rowSpan={group.accounts.length} style={{ padding: '16px 20px', color: '#64748b', verticalAlign: 'middle', borderRight: '2px solid #f8fafc', fontSize: 13 * sTable * colScales.date, width: '15%', fontWeight: 'bold' }}>
+                                          <td rowSpan={group.accounts.length} style={{ padding: '16px 20px', color: '#64748b', verticalAlign: 'middle', borderRight: '2px solid rgba(248, 250, 252, 0.6)', fontSize: 13 * sTable * colScales.date, width: '15%', fontWeight: 'bold' }}>
                                             {(group.policyDate || '').replace(/-/g, '/')}
                                           </td>
                                         )}
-                                        <td style={{ padding: '16px 20px', fontWeight: '900', color: theme.accountColors[acc.id] || '#0f172a', width: '25%', fontSize: 14 * sTable * colScales.name }}>
+                                        {/* 基金名稱字體顏色與圖表色彩連動同步 (group.color) */}
+                                        <td style={{ padding: '16px 20px', fontWeight: '900', color: group.color, width: '25%', fontSize: 14 * sTable * colScales.name }}>
                                           {acc.name || '未選擇標的'}
                                         </td>
                                         <td style={{ padding: '16px 20px 16px 0', fontSize: 14 * sTable * colScales.unit, width: '20%', color: '#334155', fontWeight: 'bold' }}>
                                           {Number(acc.units || 0).toLocaleString('en-US', { maximumFractionDigits: 10 })}
                                         </td>
                                         {aIdx === 0 && (
-                                          <td rowSpan={group.accounts.length} style={{ textAlign: 'right', padding: '16px 20px', fontWeight: '900', color: '#0f172a', verticalAlign: 'middle', borderLeft: '2px solid #f8fafc', width: '20%', fontSize: 14 * sTable * colScales.invest }}>
+                                          <td rowSpan={group.accounts.length} style={{ textAlign: 'right', padding: '16px 20px', fontWeight: '900', color: '#0f172a', verticalAlign: 'middle', borderLeft: '2px solid rgba(248, 250, 252, 0.6)', width: '20%', fontSize: 14 * sTable * colScales.invest }}>
                                             {accSym} {Number(group.totalInvest || 0).toLocaleString()}
                                           </td>
                                         )}
@@ -951,7 +1125,7 @@ rawMonthlyData.forEach(row => {
                           </div>
                         </div>
                         
-                        {/* 重大投資紀錄 */}
+                        {/* 重大投資紀錄 (已使用 JSX 註解隱藏)
                         <div style={{ ...cardStyle, flex: 1 }}>
                           <div style={{ fontSize: 18 * sEvents, fontWeight: 900, color: '#0f172a', marginBottom: '20px' }}>
                             <EditableTitle value={getTitle('events', '⭐ 期間重大投資紀錄')} onSave={v => updateTitle('events', v)} />
@@ -976,6 +1150,7 @@ rawMonthlyData.forEach(row => {
                             })}
                           </div>
                         </div>
+                        */}
                       </div>
                     </div>
                   </div>
