@@ -21,6 +21,9 @@
   <!-- 5. 載入 html2canvas 用於截圖 -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
+  <!-- 6. 💡 載入 JSZip 用於全體客戶報表一鍵壓縮打包下載 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
   <style>
     body { 
       margin: 0; 
@@ -44,6 +47,21 @@
       box-shadow: 0 15px 35px rgba(0,0,0,0.04), 0 5px 15px rgba(0,0,0,0.02);
       border-radius: 20px;
     }
+
+    /* 截圖導出時的特別樣式：強制隱藏編輯輔助虛線，避免產生黑影或虛擬框線 */
+    .html2canvas-container [contenteditable] {
+      border-bottom: 1px dashed transparent !important;
+      outline: none !important;
+    }
+    .html2canvas-container .no-capture {
+      display: none !important;
+    }
+
+    /* 高級提示框下滑動畫 */
+    @keyframes slideDown {
+      from { transform: translate(-50%, -20px); opacity: 0; }
+      to { transform: translate(-50%, 0); opacity: 1; }
+    }
   </style>
 </head>
 <body>
@@ -62,16 +80,6 @@
       gray:  "#64748b",   
       light: "#f8fafc",   
       gold:  "#f59e0b",
-    };
-
-    const cardStyle = {
-      background: C.white,
-      borderRadius: '24px',
-      padding: '24px',
-      boxShadow: '0 20px 40px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.02)',
-      border: '1px solid #f1f5f9',
-      display: 'flex',
-      flexDirection: 'column'
     };
 
     function Counter({ target, prefix = '', suffix = '', duration = 1400 }) {
@@ -122,7 +130,7 @@
         { id: 'A2', name: '', acc: '', policyDate: '', invest: 0, units: 0, currency: 'TWD' }
       ],
       theme: {
-        accountColors: { A1: "#3b82f6", A2: "#06b6d4" },
+        accountColors: { A1: "#2563eb", A2: "#0891b2" },
         lineTotal: "#f59e0b", heroBg: "#1e293b"
       },
       rawMonthlyData: [
@@ -145,7 +153,22 @@
       // 自訂背景圖片與磨砂玻璃不透明度控制
       const [bgImage, setBgImage] = useState(null);
       const [bgOpacity, setBgOpacity] = useState(0.85); // 預設 85% 輕透度
+
+      // 姓氏搜尋字串
+      const [searchSurname, setSearchSurname] = useState("");
+
+      // 全域 Toast 提示狀態，取代傳統 alert()
+      const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
+      const showToast = (message, type = 'success') => {
+        setToast({ show: true, message, type });
+        setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3000);
+      };
       
+      // 💡 批量下載全體報表專用狀態機
+      const [batchIndex, setBatchIndex] = useState(-1); // -1 代表未運行運行，>= 0 代表目前捕捉第幾個客戶
+      const [batchSavedImages, setBatchSavedImages] = useState([]); // 暫存捕捉完的 Base64 數據
+      const [originalClientIdBeforeBatch, setOriginalClientIdBeforeBatch] = useState(null); // 下載結束後切換回原本選定的客戶
+
       const [savedThemes, setSavedThemes] = useState(() => {
         try { const local = localStorage.getItem('investment_color_themes_v6'); return local ? JSON.parse(local) : []; } catch (e) { return []; }
       });
@@ -165,7 +188,10 @@
       const [activeClientId, setActiveClientId] = useState(clients[0]?.id);
       useEffect(() => { localStorage.setItem('investment_crm_clients_v3', JSON.stringify(clients)); }, [clients]);
 
-      const activeClient = clients.find(c => c.id === activeClientId) || clients[0];
+      // 💡 重寫 ActiveClient：若正處於一鍵打包背景下載狀態，則由 batchIndex 動態覆蓋渲染對象，實現流暢的背景離屏繪製
+      const activeClient = batchIndex !== -1 
+        ? (clients[batchIndex] || clients[0]) 
+        : (clients.find(c => c.id === activeClientId) || clients[0]);
 
       const updateActiveClientField = (field, valueOrUpdater) => {
         setClients(prevClients => prevClients.map(c => {
@@ -210,9 +236,10 @@
 
       const [colScales, setColScales] = useState({ policy: 1, date: 1, name: 1, unit: 1, invest: 1, monthly: 1 });
       const updateColScale = (key, delta) => setColScales(prev => ({ ...prev, [key]: Math.min(3, Math.max(0.4, prev[key] + delta)) }));
+      
       const ScaleButtons = ({ scaleKey }) => (
         !isSaving ? (
-          <div style={{ display: 'flex', background: '#f1f5f9', borderRadius: '6px', overflow: 'hidden', flexShrink: 0, boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.05)' }}>
+          <div className="no-capture" style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: '6px', overflow: 'hidden', flexShrink: 0, marginLeft: '6px', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.05)' }}>
             <button onClick={() => updateColScale(scaleKey, -0.1)} style={{ background: 'transparent', border: 'none', padding: '2px 8px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', color: C.gray }} title="縮小">-</button>
             <button onClick={() => updateColScale(scaleKey, 0.1)} style={{ background: 'transparent', border: 'none', padding: '2px 8px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', color: C.gray }} title="放大">+</button>
           </div>
@@ -249,16 +276,28 @@
       accountTotals.forEach(acc => {
         const pKey = (acc.acc || '').trim() || acc.id; 
         if (!policyMap[pKey]) {
-          policyMap[pKey] = { key: pKey, policyNo: (acc.acc || '').trim() || '未命名保單', policyDate: acc.policyDate || '', names: [acc.name || '未選擇標的'], totalDividend: 0, totalInvest: 0, currency: acc.currency, color: theme.accountColors[acc.id], accounts: [] };
+          policyMap[pKey] = { 
+            key: pKey, 
+            policyNo: (acc.acc || '').trim() || '未命名保單', 
+            policyDate: acc.policyDate || '', 
+            names: [acc.name || '未選擇標的'], 
+            totalDividend: 0, 
+            totalInvest: 0, 
+            currency: acc.currency, 
+            color: theme.accountColors[acc.id] || '#2563eb', 
+            accounts: [] 
+          };
           groupedByPolicy.push(policyMap[pKey]);
-        } else policyMap[pKey].names.push(acc.name || '未選擇標的');
+        } else {
+          policyMap[pKey].names.push(acc.name || '未選擇標的');
+        }
         policyMap[pKey].accounts.push(acc);
         policyMap[pKey].totalDividend += acc.totalDividend;
         policyMap[pKey].totalInvest += acc.totalInvest;
         if (policyMap[pKey].currency !== acc.currency) policyMap[pKey].currency = 'MIXED';
       });
 
-// 設定動態磨砂玻璃卡片背景與柔和陰影樣式
+      // 設定動態磨砂玻璃卡片背景與柔和陰影樣式
       const cardStyle = {
         background: bgImage ? `rgba(255, 255, 255, ${bgOpacity})` : '#ffffff',
         borderRadius: '24px',
@@ -271,66 +310,95 @@
         backdropFilter: bgImage ? 'blur(10px)' : 'none',
       };
 
-  // 動態整合 monthlyData 且依據「保單維度」進行圖表數值堆疊
+      // 建立每張保單的獨立歷史累加器
+      const policyCumSums = {};
+      groupedByPolicy.forEach(group => {
+        policyCumSums[group.key] = 0;
+      });
+
+      // 動態偵測最後一個有實際輸入數據的月份索引
+      let lastActiveIndex = -1;
+      rawMonthlyData.forEach((row, idx) => {
+        let hasData = false;
+        accounts.forEach(acc => {
+          const val = Number(row[acc.id]) || 0;
+          if (val > 0) {
+            hasData = true;
+          }
+        });
+        if (hasData) {
+          lastActiveIndex = idx;
+        }
+      });
+      if (lastActiveIndex === -1) {
+        lastActiveIndex = 0;
+      }
+
       let currentCum = 0;
-      const monthlyData = rawMonthlyData.map(d => {
+      const monthlyData = rawMonthlyData.map((d, idx) => {
         let sumThisMonth = 0;
         const newD = { month: d.month };
         
-        // 初始化保單當月累加值為 0
+        // 先計算該月份各個保單的單月總和
+        const groupSumsThisMonth = {};
         groupedByPolicy.forEach(group => {
-          newD[`${group.key}_chart`] = 0;
-        });
-
-        accounts.forEach(acc => { 
-          const val = Number(d[acc.id]) || 0; 
-          sumThisMonth += val; 
-          newD[acc.id] = val; 
-
-          // 累加到所屬的保單
-          const pKey = (acc.acc || '').trim() || acc.id;
-          if (newD[`${pKey}_chart`] !== undefined) {
-            newD[`${pKey}_chart`] += val;
-          }
-        });
-
-        // 將 0 轉換成 null 避免圖表渲染不必要的空白長條
-        groupedByPolicy.forEach(group => {
-          if (newD[`${group.key}_chart`] === 0) {
-            newD[`${group.key}_chart`] = null;
-          }
+          let groupSumThisMonth = 0;
+          group.accounts.forEach(acc => {
+            const val = Number(d[acc.id]) || 0;
+            sumThisMonth += val;
+            groupSumThisMonth += val;
+            newD[acc.id] = val; 
+          });
+          groupSumsThisMonth[group.key] = groupSumThisMonth;
         });
 
         currentCum += sumThisMonth;
-        newD.TotalCum = currentCum;           
+
+        // 核心關鍵：若當前月份小於或等於最後有數據的月份，則傳入累積高度供圖表繪製；若大於，則設為 null
+        groupedByPolicy.forEach(group => {
+          policyCumSums[group.key] += groupSumsThisMonth[group.key];
+          if (idx <= lastActiveIndex) {
+            newD[`policy_${group.key}`] = policyCumSums[group.key];
+          } else {
+            newD[`policy_${group.key}`] = null; 
+          }
+        });
+
+        if (idx <= lastActiveIndex) {
+          newD.TotalCum = currentCum;
+        } else {
+          newD.TotalCum = null; 
+        }
+        
         newD.monthlyTotal = sumThisMonth;     
         return newD;
       });
-// 初始化統計變數
-let totalCash = 0; // 現金給付總和
-let totalUnits = 0; // 累積單位數總和
-      let lastIdx = -1;
-      // 遍歷所有月份進行分類加總
-rawMonthlyData.forEach(row => {
-  accounts.forEach(acc => {
-    const amount = Number(row[acc.id]) || 0;
-    const type = row[`${acc.id}_type`]|| '現金給付';
 
-    if (type === '現金給付') {
-      totalCash += amount;
-    } else if (type === '累積單位數') {
-      totalUnits += amount;
-    }
-  });
-});
+      // 累計現金給付與累計單位數之加總
+      let totalCash = 0; 
+      let totalUnits = 0; 
+      rawMonthlyData.forEach(row => {
+        accounts.forEach(acc => {
+          const amount = Number(row[acc.id]) || 0;
+          const type = row[`${acc.id}_type`] || '現金給付';
+          if (type === '現金給付') {
+            totalCash += amount;
+          } else if (type === '累積單位數') {
+            totalUnits += amount;
+          }
+        });
+      });
 
-      const chartDisplayData = monthlyData;
+      // 搜尋篩選後的客戶名單邏輯
+      const filteredClients = clients.filter(c => {
+        if (!searchSurname.trim()) return true;
+        return c.clientName.trim().includes(searchSurname.trim());
+      });
 
       const handleAddProduct = () => setProducts([...products, { id: `P${Date.now()}`, name: `新標的 ${products.length + 1}`, currency: 'TWD' }]);
       const handleUpdateProduct = (id, field, value) => setProducts(products.map(p => p.id === id ? { ...p, [field]: value } : p));
       const handleAddClient = () => { const newId = `C${Date.now()}`; setClients([...clients, { ...JSON.parse(JSON.stringify(defaultClientState)), id: newId, clientName: `新客戶 ${clients.length + 1}` }]); setActiveClientId(newId); };
       const handleAddAccount = () => { const newId = `A${Date.now()}`; setAccounts(prev => [...prev, { id: newId, name: '', acc: '', policyDate: '', invest: 0, units: 0, currency: 'TWD' }]); setTheme(prev => ({ ...prev, accountColors: { ...prev.accountColors, [newId]: getRandomColor() } })); setRawMonthlyData(rawMonthlyData.map(d => ({ ...d, [newId]: 0 }))); };
-      const handleAddMonth = () => { const nextMonthNum = rawMonthlyData.length + 1; const newRow = { month: `${nextMonthNum}月` }; accounts.forEach(acc => newRow[acc.id] = 0); setRawMonthlyData([...rawMonthlyData, newRow]); };
       const handleAccountChange = (id, field, value) => setAccounts(prev => prev.map(a => a.id === id ? { ...a, [field]: value } : a));
       const handleDataChange = (i, accountId, v) => setRawMonthlyData(prev => { const nd = [...prev]; nd[i] = { ...nd[i], [accountId]: v === '' ? '' : Number(v) }; return nd; }); 
       const handleTypeChange = (i, accountId, v) => setRawMonthlyData(prev => { const nd = [...prev]; nd[i] = { ...nd[i], [`${accountId}_type`]: v }; return nd; });
@@ -338,7 +406,6 @@ rawMonthlyData.forEach(row => {
       const handleRemoveEvent = (id) => setEventRecords(prev => prev.filter(e => e.id !== id));
       const handleAddEvent = () => setEventRecords(prev => [...prev, { id: Date.now(), icon: '💰', date: '', amount: '0', target: accounts[0]?.id || '', currency: 'TWD' }]);
       
- // 上傳背景底圖檔案，並將其轉為 Base64
       const handleBgUpload = (e) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -349,15 +416,16 @@ rawMonthlyData.forEach(row => {
         reader.readAsDataURL(file);
       };
 
-
-
-
       const confirmDeleteAction = () => {
         if (deleteConfirm.type === 'event') handleRemoveEvent(deleteConfirm.id);
         else if (deleteConfirm.type === 'theme') { const nt = savedThemes.filter(t => t.id !== deleteConfirm.id); setSavedThemes(nt); localStorage.setItem('investment_color_themes_v6', JSON.stringify(nt)); }
         else if (deleteConfirm.type === 'account') setAccounts(accounts.filter(a => a.id !== deleteConfirm.id));
         else if (deleteConfirm.type === 'month') setRawMonthlyData(rawMonthlyData.filter((_, i) => i !== deleteConfirm.id));
-        else if (deleteConfirm.type === 'client') { const newClients = clients.filter(c => c.id !== deleteConfirm.id); setClients(newClients); if (activeClientId === deleteConfirm.id) setActiveClientId(newClients[0].id); }
+        else if (deleteConfirm.type === 'client') { 
+          const newClients = clients.filter(c => c.id !== deleteConfirm.id); 
+          setClients(newClients); 
+          if (activeClientId === deleteConfirm.id) setActiveClientId(newClients[0].id); 
+        }
         else if (deleteConfirm.type === 'product') setProducts(products.filter(p => p.id !== deleteConfirm.id));
         setDeleteConfirm({ show: false, id: null, type: '' });
       };
@@ -369,23 +437,20 @@ rawMonthlyData.forEach(row => {
 
       const reportRef = useRef(null);
       
-      // 🌟 核心防錯與最佳化的圖片生成函數
       const handleSaveImage = () => {
         if (activeTab !== 'dashboard') return;
         setIsSaving(true);
         
         if (!window.html2canvas) {
-          alert('系統未載入截圖套件，請檢查網路狀態。');
+          showToast('系統未載入截圖套件，請檢查網路狀態。', 'error');
           setIsSaving(false);
           return;
         }
- // 強制模糊取消聚焦目前正在修改中的輸入欄位，避免游標被拍進高清圖中
+
         if (document.activeElement && typeof document.activeElement.blur === 'function') {
           document.activeElement.blur();
         }
 
-
-        // 延長等待時間至 600ms，確保圖表動畫完全靜止，DOM 更新完畢
         setTimeout(() => {
           const element = reportRef.current;
           if (!element) {
@@ -394,12 +459,11 @@ rawMonthlyData.forEach(row => {
           }
 
           window.html2canvas(element, { 
-            scale: 2, // 降回黃金 2 倍率，完美防範 Apple/Safari 的畫布記憶體溢出崩潰
+            scale: 2, 
             useCORS: true, 
             backgroundColor: null, 
-            logging: false ,
+            logging: false,
             onclone: (clonedDoc) => {
-              // 在克隆體上添加隱藏邊框等輔助焦點元素的 HTML 容器類
               const target = clonedDoc.querySelector('[ref="reportRef"]') || clonedDoc.body;
               target.classList.add('html2canvas-container');
             }
@@ -408,10 +472,149 @@ rawMonthlyData.forEach(row => {
             setIsSaving(false);
           }).catch(e => {
             console.error("截圖錯誤:", e);
-            alert('圖片生成失敗，可能是因為裝置記憶體不足。您可以直接使用系統截圖工具！');
+            showToast('圖片生成失敗，可能是因為裝置記憶體不足。', 'error');
             setIsSaving(false);
           });
         }, 500);
+      };
+
+      // 💡 異步批量捕捉與 ZIP 打包下載機制
+      useEffect(() => {
+        if (batchIndex === -1) return;
+
+        const runCapturePass = () => {
+          // 延長等待時間至 900ms，確保 Recharts 折線與柱狀圖累積數據完全重新渲染並停止動畫
+          const timer = setTimeout(() => {
+            const element = reportRef.current;
+            if (!element) {
+              handleNextBatchSkip();
+              return;
+            }
+
+            if (document.activeElement && typeof document.activeElement.blur === 'function') {
+              document.activeElement.blur();
+            }
+
+            window.html2canvas(element, {
+              scale: 2,
+              useCORS: true,
+              backgroundColor: null,
+              logging: false,
+              onclone: (clonedDoc) => {
+                const target = clonedDoc.querySelector('[ref="reportRef"]') || clonedDoc.body;
+                target.classList.add('html2canvas-container');
+              }
+            }).then(cvs => {
+              const dataUrl = cvs.toDataURL('image/jpeg', 0.95);
+              const currentClient = clients[batchIndex];
+
+              setBatchSavedImages(prev => {
+                const nextList = [...prev, { 
+                  name: currentClient.clientName || `客戶_${batchIndex + 1}`, 
+                  dataUrl 
+                }];
+
+                // 如果已經是最後一位客戶，直接觸發 ZIP 生成
+                if (batchIndex === clients.length - 1) {
+                  triggerZipPackingAndDownload(nextList);
+                } else {
+                  // 切換到下一位客戶進行渲染
+                  setBatchIndex(prevIdx => prevIdx + 1);
+                }
+                return nextList;
+              });
+            }).catch(e => {
+              console.error("批量截圖錯誤, 索引：", batchIndex, e);
+              handleNextBatchSkip();
+            });
+          }, 900);
+
+          return () => clearTimeout(timer);
+        };
+
+        const handleNextBatchSkip = () => {
+          if (batchIndex === clients.length - 1) {
+            triggerZipPackingAndDownload(batchSavedImages);
+          } else {
+            setBatchIndex(prevIdx => prevIdx + 1);
+          }
+        };
+
+        return runCapturePass();
+      }, [batchIndex]);
+
+      // 💡 建立 ZIP 並觸發本地下載
+      const triggerZipPackingAndDownload = (images) => {
+        if (!window.JSZip) {
+          showToast('無法載入壓縮套件，匯出失敗。', 'error');
+          resetBatchState();
+          return;
+        }
+
+        const zip = new JSZip();
+        const usedNames = {};
+
+        images.forEach((img) => {
+          // 安全處理非法檔案路徑與命名字元，轉為底線相容
+          let safeName = (img.name || '').trim().replace(/[/\\?%*:|"<>. ]/g, '_');
+          if (!safeName) safeName = '未命名客戶';
+
+          // 檔名重複時追加流水號
+          if (usedNames[safeName] !== undefined) {
+            usedNames[safeName] += 1;
+            safeName = `${safeName}_${usedNames[safeName]}`;
+          } else {
+            usedNames[safeName] = 0;
+          }
+
+          // 去除 data:image/jpeg;base64, 標頭，提取純 Base64
+          const base64Data = img.dataUrl.split(',')[1];
+          zip.file(`${safeName}.jpg`, base64Data, { base64: true });
+        });
+
+        zip.generateAsync({ type: 'blob' }).then(blob => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+          a.download = `全體客戶投資報表打包_${dateStr}.zip`;
+          a.click();
+          URL.revokeObjectURL(url);
+
+          showToast(`✨ 成功匯出 ${images.length} 位客戶高清報表！`, 'success');
+          resetBatchState();
+        }).catch(err => {
+          console.error("ZIP 壓縮出錯：", err);
+          showToast('壓縮打包時發生未知錯誤！', 'error');
+          resetBatchState();
+        });
+      };
+
+      const resetBatchState = () => {
+        setIsSaving(false);
+        setBatchIndex(-1);
+        setBatchSavedImages([]);
+        if (originalClientIdBeforeBatch) {
+          setActiveClientId(originalClientIdBeforeBatch);
+        }
+      };
+
+      const handleImportData = (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const data = JSON.parse(e.target.result);
+            if (data.clients) { setClients(data.clients); setActiveClientId(data.clients[0]?.id); }
+            if (data.products) setProducts(data.products);
+            if (data.savedThemes) setSavedThemes(data.savedThemes);
+            showToast('✅ 資料還原成功！', 'success');
+          } catch (err) {
+            showToast('❌ 檔案格式錯誤，請確認您上傳的是正確的 .json 備份檔！', 'error');
+          }
+        };
+        reader.readAsText(file);
       };
 
       const handleExportData = () => {
@@ -430,24 +633,6 @@ rawMonthlyData.forEach(row => {
         a.click();
       };
 
-      const handleImportData = (event) => {
-        const file = event.target.files[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          try {
-            const data = JSON.parse(e.target.result);
-            if (data.clients) { setClients(data.clients); setActiveClientId(data.clients[0]?.id); }
-            if (data.products) setProducts(data.products);
-            if (data.savedThemes) setSavedThemes(data.savedThemes);
-            alert(`✅ 資料還原成功！(備份時間: ${data.exportDate || '未知'})`);
-          } catch (err) {
-            alert("❌ 檔案格式錯誤，請確認您上傳的是正確的 .json 備份檔！");
-          }
-        };
-        reader.readAsText(file);
-      };
-
       const inputStyle = { background: '#f8fafc', border: '1px solid #cbd5e1', color: '#1e293b', padding: '10px 12px', borderRadius: '8px', outline: 'none', width: '100%', boxSizing: 'border-box', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.02)', fontWeight: '500', transition: 'border 0.2s' };
       const selectStyle = { ...inputStyle, cursor: 'pointer', appearance: 'none', backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%2364748b%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right .7rem top 50%', backgroundSize: '.65rem auto' };
       const labelStyle = { display: 'block', fontSize: '13px', color: '#475569', marginBottom: '8px', fontWeight: 'bold' };
@@ -461,7 +646,7 @@ rawMonthlyData.forEach(row => {
             <div style={{ background: '#ffffff', padding: '40px', borderRadius: '24px', boxShadow: '0 20px 40px rgba(0,0,0,0.1)', textAlign: 'center', maxWidth: '500px' }}>
               <div style={{ fontSize: '48px', marginBottom: '16px' }}>⚠️</div>
               <h2 style={{ color: '#ef4444', margin: '0 0 16px 0', fontSize: '24px', fontWeight: '900' }}>系統檢測到圖表加載異常</h2>
-              <p style={{ color: '#475569', lineHeight: '1.6', marginBottom: '24px' }}>這可能是因為您的網路連線不穩，或是瀏覽器安全性阻擋了圖表核心模組的下載。請重新整理頁面，如果問題持續，建議使用 <b>Google Chrome</b> 開啟此檔案。</p>
+              <p style={{ color: '#475569', lineHeight: '1.6', marginBottom: '24px' }}>這可能是原因為您的網路連線不穩，或是瀏覽器安全性阻擋了圖表核心模組的下載。請重新整理頁面，如果問題持續，建議使用 <b>Google Chrome</b> 開享此檔案。</p>
               <button onClick={() => setActiveTab('data')} style={{ background: '#3b82f6', color: '#fff', border: 'none', padding: '12px 24px', borderRadius: '12px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px', boxShadow: '0 4px 12px rgba(59,130,246,0.3)' }}>返回編輯數據</button>
             </div>
           </div>
@@ -469,196 +654,295 @@ rawMonthlyData.forEach(row => {
       }
 
       return (
-        <div style={{ minHeight: '100vh', padding: '24px', boxSizing: 'border-box', overflowX: 'hidden' }}>
-          <div style={{ maxWidth: '1240px', margin: '0 auto', width: '100%', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        /* 💡 修正一：將最外層容器設為 Flexbox，水平與垂直在寬螢幕下完美居中對齊，解決畫面偏左問題 */
+        <div style={{ 
+          minHeight: '100vh', 
+          padding: '24px', 
+          boxSizing: 'border-box', 
+          overflowX: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'flex-start',
+          width: '100%'
+        }}>
+          {/* 💡 修正：將最大寬度(maxWidth)從 1240px 擴展至 1400px，大幅縮減寬螢幕左右不必要的留白，使版面最大化利用 */}
+          <div style={{ maxWidth: '1400px', margin: '0 auto', width: '100%', display: 'flex', flexDirection: 'column', gap: '24px' }}>
             
-            {/* 🌟 頂部 CRM 與導航切換 */}
-            <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px 24px', border: 'none', background: '#ffffff', boxShadow: '0 10px 30px rgba(0,0,0,0.04)' }}>
+            {/* 頂部 CRM 客戶切換與主要分頁導航 (已完全移除「常用姓氏」快捷標籤列) */}
+            <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '24px', border: 'none', background: '#ffffff', boxShadow: '0 10px 30px rgba(0,0,0,0.04)' }}>
               
-              <div style={{ display: 'flex', gap: '10px', overflowX: 'auto', paddingBottom: '8px', alignItems: 'center', WebkitOverflowScrolling: 'touch' }}>
-                {clients.map(c => (
-                  <div key={c.id} style={{ display: 'flex', alignItems: 'center', background: activeClientId === c.id ? '#eff6ff' : '#f1f5f9', borderRadius: '12px', overflow: 'hidden', flexShrink: 0, border: activeClientId === c.id ? '2px solid #3b82f6' : '2px solid transparent', transition: 'all 0.2s' }}>
-                    <button onClick={() => setActiveClientId(c.id)} style={{ background: 'transparent', color: activeClientId === c.id ? '#1d4ed8' : '#64748b', border: 'none', padding: '10px 18px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', whiteSpace: 'nowrap' }}>
-                      👤 {c.clientName}
-                    </button>
-                    {clients.length > 1 && (
-                      <button onClick={() => setDeleteConfirm({ show: true, id: c.id, type: 'client' })} style={{ background: 'rgba(0,0,0,0.03)', color: activeClientId === c.id ? '#3b82f6' : '#94a3b8', border: 'none', padding: '10px 14px', cursor: 'pointer', fontSize: '12px' }}>✕</button>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', alignItems: 'end' }}>
+                
+                {/* 1. 搜尋姓氏/名稱欄位 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <label style={{ fontSize: '13px', color: '#475569', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    🔍 1. 搜尋姓氏或名稱
+                  </label>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <input 
+                      type="text" 
+                      value={searchSurname} 
+                      onChange={e => setSearchSurname(e.target.value)} 
+                      placeholder="輸入姓氏篩選 (例如: 馬)..." 
+                      style={{ ...inputStyle, padding: '11px 14px', background: '#f8fafc' }}
+                    />
+                    {searchSurname && (
+                      <button 
+                        onClick={() => setSearchSurname("")} 
+                        style={{ background: '#cbd5e1', border: 'none', color: '#334155', padding: '11px 14px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}
+                      >
+                        清除
+                      </button>
                     )}
                   </div>
-                ))}
-                <button onClick={handleAddClient} style={{ background: '#f0fdfa', color: '#0891b2', border: '1px dashed #06b6d4', padding: '10px 18px', borderRadius: '12px', cursor: 'pointer', fontWeight: 'bold', flexShrink: 0, fontSize: '14px', whiteSpace: 'nowrap', boxShadow: '0 2px 4px rgba(6,182,212,0.1)' }}>
-                  ➕ 新增客戶
-                </button>
-              </div>
+                </div>
 
-              <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: '12px', background: '#f8fafc', padding: '8px', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
-                <button onClick={() => setActiveTab('dashboard')} style={{ background: activeTab === 'dashboard' ? '#ffffff' : 'transparent', color: activeTab === 'dashboard' ? '#2563eb' : '#64748b', padding: '12px 28px', borderRadius: '12px', border: 'none', fontWeight: '800', cursor: 'pointer', fontSize: '15px', boxShadow: activeTab === 'dashboard' ? '0 4px 12px rgba(0,0,0,0.05)' : 'none', transition: 'all 0.3s' }}>📊 華麗報表預覽</button>
-                <button onClick={() => setActiveTab('data')} style={{ background: activeTab === 'data' ? '#ffffff' : 'transparent', color: activeTab === 'data' ? '#ea580c' : '#64748b', padding: '12px 28px', borderRadius: '12px', border: 'none', fontWeight: '800', cursor: 'pointer', fontSize: '15px', boxShadow: activeTab === 'data' ? '0 4px 12px rgba(0,0,0,0.05)' : 'none', transition: 'all 0.3s' }}>📝 數據編輯中心</button>
-                <div style={{ width: '1px', background: '#cbd5e1', margin: '4px 8px', alignSelf: 'stretch' }}></div>
-                <button onClick={() => setActiveTab('products')} style={{ background: activeTab === 'products' ? '#ffffff' : 'transparent', color: activeTab === 'products' ? '#9333ea' : '#64748b', padding: '12px 28px', borderRadius: '12px', border: 'none', fontWeight: '800', cursor: 'pointer', fontSize: '15px', boxShadow: activeTab === 'products' ? '0 4px 12px rgba(0,0,0,0.05)' : 'none', transition: 'all 0.3s' }}>⚙️ 商品庫與備份</button>
+                {/* 2. 選擇完整名稱下拉選單 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <label style={{ fontSize: '13px', color: '#475569', fontWeight: 'bold' }}>
+                    👥 2. 選擇客戶完整名稱 ({filteredClients.length} 筆資料)
+                  </label>
+                  <select
+                    value={filteredClients.some(c => c.id === activeClientId) ? activeClientId : ""}
+                    onChange={e => {
+                      if (e.target.value) {
+                        setActiveClientId(e.target.value);
+                      }
+                    }}
+                    style={{ ...selectStyle, padding: '11px 14px', background: '#f8fafc', color: '#0f172a', fontWeight: 'bold' }}
+                  >
+                    <option value="" disabled>
+                      {filteredClients.length > 0 ? "-- 請選擇選單中的客戶 --" : "-- 無符合搜尋結果的客戶 --"}
+                    </option>
+                    {filteredClients.map(c => (
+                      <option key={c.id} value={c.id}>
+                        👤 {c.clientName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 3. 快速操作管理區 */}
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button 
+                    onClick={handleAddClient} 
+                    style={{ 
+                      flex: 1,
+                      background: '#f0fdfa', 
+                      color: '#0891b2', 
+                      border: '1px dashed #06b6d4', 
+                      padding: '12px 18px', 
+                      borderRadius: '12px', 
+                      cursor: 'pointer', 
+                      fontWeight: 'bold', 
+                      fontSize: '14px', 
+                      whiteSpace: 'nowrap', 
+                      boxShadow: '0 2px 4px rgba(6,182,212,0.1)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    <span>➕</span> 新增客戶
+                  </button>
+                  {clients.length > 1 && (
+                    <button 
+                      onClick={() => setDeleteConfirm({ show: true, id: activeClientId, type: 'client' })}
+                      style={{ 
+                        flex: 1,
+                        background: '#fef2f2', 
+                        color: '#ef4444', 
+                        border: '1px solid #fca5a5', 
+                        padding: '12px 18px', 
+                        borderRadius: '12px', 
+                        cursor: 'pointer', 
+                        fontWeight: 'bold', 
+                        fontSize: '14px', 
+                        whiteSpace: 'nowrap',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px'
+                      }}
+                    >
+                      <span>🗑️</span> 刪除此客戶
+                    </button>
+                  )}
+                </div>
+
               </div>
             </div>
 
-            {/* ==================================================== 📦 商品庫與備份分頁 ==================================================== */}
-            {activeTab === 'products' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-                
-                {/* 🌟 系統備份區塊 */}
-                <div className="glass-card" style={{ padding: '32px', background: 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)', border: '2px dashed #cbd5e1' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-                    <div>
-                      <h2 style={{ margin: '0 0 12px 0', fontSize: '22px', color: '#0f172a', fontWeight: '900' }}>💾 系統資料備份與還原 (Checkpoint)</h2>
-                      <p style={{ fontSize: '14px', color: '#64748b', margin: 0, lineHeight: '1.6', maxWidth: '600px' }}>在此將您的所有客戶資料、標的設定與自訂配色下載為一個備份檔。當您更換電腦、清理瀏覽器快取，或怕不小心把資料改壞時，可以隨時上傳這個檔案還原到先前的 Checkpoint 狀態。</p>
-                    </div>
-                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                      <button onClick={handleExportData} style={{ background: '#3b82f6', color: '#fff', border: 'none', padding: '14px 24px', borderRadius: '12px', cursor: 'pointer', fontWeight: '900', fontSize: '15px', boxShadow: '0 8px 20px rgba(59,130,246,0.3)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ fontSize: '18px' }}>⬇️</span> 建立備份檔 (.json)
-                      </button>
-                      <button onClick={() => document.getElementById('importFile').click()} style={{ background: '#ffffff', color: '#334155', border: '2px solid #cbd5e1', padding: '14px 24px', borderRadius: '12px', cursor: 'pointer', fontWeight: '900', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px', boxShadow: '0 4px 6px rgba(0,0,0,0.02)' }}>
-                        <span style={{ fontSize: '18px' }}>⬆️</span> 讀取還原檔
-                      </button>
-                      <input type="file" id="importFile" accept=".json" style={{ display: 'none' }} onChange={handleImportData} />
-                    </div>
-                  </div>
-                </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: '12px', background: '#f8fafc', padding: '8px', borderRadius: '16px', border: '1px solid #e2e8f0', marginTop: '8px' }}>
+              <button onClick={() => setActiveTab('dashboard')} style={{ background: activeTab === 'dashboard' ? '#ffffff' : 'transparent', color: activeTab === 'dashboard' ? '#2563eb' : '#64748b', padding: '12px 28px', borderRadius: '12px', border: 'none', fontWeight: '800', cursor: 'pointer', fontSize: '15px', boxShadow: activeTab === 'dashboard' ? '0 4px 12px rgba(0,0,0,0.05)' : 'none', transition: 'all 0.3s' }}>📊 華麗報表預覽</button>
+              <button onClick={() => setActiveTab('data')} style={{ background: activeTab === 'data' ? '#ffffff' : 'transparent', color: activeTab === 'data' ? '#ea580c' : '#64748b', padding: '12px 28px', borderRadius: '12px', border: 'none', fontWeight: '800', cursor: 'pointer', fontSize: '15px', boxShadow: activeTab === 'data' ? '0 4px 12px rgba(0,0,0,0.05)' : 'none', transition: 'all 0.3s' }}>📝 數據編輯中心</button>
+              <div style={{ width: '1px', background: '#cbd5e1', margin: '4px 8px', alignSelf: 'stretch' }}></div>
+              <button onClick={() => setActiveTab('products')} style={{ background: activeTab === 'products' ? '#ffffff' : 'transparent', color: activeTab === 'products' ? '#9333ea' : '#64748b', padding: '12px 28px', borderRadius: '12px', border: 'none', fontWeight: '800', cursor: 'pointer', fontSize: '15px', boxShadow: activeTab === 'products' ? '0 4px 12px rgba(0,0,0,0.05)' : 'none', transition: 'all 0.3s' }}>⚙️ 商品庫與備份</button>
+            </div>
+          </div>
 
-                {/* 標的商品庫區塊 */}
-                <div className="glass-card" style={{ padding: '32px' }}>
-                  <h2 style={{ marginTop: 0, marginBottom: '20px', borderBottom: '2px solid #f1f5f9', paddingBottom: '16px', fontSize: '22px', color: '#0f172a', fontWeight: '900' }}>📦 全域標的商品庫</h2>
-                  <p style={{ fontSize: '14px', color: '#64748b', marginBottom: '32px', lineHeight: '1.6' }}>在此統一管理投資標的，編輯數據時可快速選取，系統會自動帶入專屬幣別。</p>
-                  
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '20px' }}>
-                    {products.map((p, idx) => (
-                      <div key={p.id} style={{ display: 'flex', gap: '12px', background: '#f8fafc', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0', alignItems: 'center', boxShadow: '0 4px 6px rgba(0,0,0,0.02)' }}>
-                        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, gap: '12px' }}>
-                          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                            <span style={{ background: '#e2e8f0', color: '#475569', padding: '4px 8px', borderRadius: '6px', fontSize: '12px', fontWeight: '800' }}>#{idx + 1}</span>
-                            <input value={p.name} onChange={e => handleUpdateProduct(p.id, 'name', e.target.value)} placeholder="標的名稱 (如: 鑫穩健-A1)" style={{ ...inputStyle, flex: 1, padding: '8px 12px' }} />
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <span style={{ fontSize: '13px', color: '#64748b', fontWeight: 'bold' }}>預設幣別：</span>
-                            <select value={p.currency} onChange={e => handleUpdateProduct(p.id, 'currency', e.target.value)} style={{ ...selectStyle, flex: 1, padding: '8px 12px', color: '#0284c7', backgroundPosition: 'right .5rem top 50%' }}>
-                              <option value="TWD">🇹🇼 NT$ 新台幣</option>
-                              <option value="USD">🇺🇸 US$ 美元</option>
-                            </select>
-                            </div>
-                         </div>
-                        <button onClick={() => setDeleteConfirm({ show: true, id: p.id, type: 'product' })} style={{ background: '#fee2e2', color: '#ef4444', border: 'none', width: '40px', height: '40px', borderRadius: '10px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', transition: 'background 0.2s' }}>✕</button>
-                      </div>
-                    ))}
-                    <div onClick={handleAddProduct} style={{ border: '2px dashed #d8b4fe', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', minHeight: '120px', color: '#9333ea', fontWeight: '900', fontSize: '16px', background: '#faf5ff', transition: 'all 0.2s' }}>
-                      ➕ 新增商品至庫存
-                    </div>
+          {/* ==================================================== 📦 商品庫與備份分頁 ==================================================== */}
+          {activeTab === 'products' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', width: '100%', maxWidth: '1240px' }}>
+              
+              {/* 系統資料備份與還原 */}
+              <div className="glass-card" style={{ padding: '32px', background: 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)', border: '2px dashed #cbd5e1' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+                  <div>
+                    <h2 style={{ margin: '0 0 12px 0', fontSize: '22px', color: '#0f172a', fontWeight: '900' }}>💾 系統資料備份與還原 (Checkpoint)</h2>
+                    <p style={{ fontSize: '14px', color: '#64748b', margin: 0, lineHeight: '1.6', maxWidth: '600px' }}>在此將您的所有客戶資料、標的設定與自訂配色下載為一個備份檔。當您更換電腦、清理瀏覽器快取，或怕不小心把資料改壞時，可以隨時上傳這個檔案還原到先前的 Checkpoint 狀態。</p>
+                  </div>
+                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    <button onClick={handleExportData} style={{ background: '#3b82f6', color: '#fff', border: 'none', padding: '14px 24px', borderRadius: '12px', cursor: 'pointer', fontWeight: '900', fontSize: '15px', boxShadow: '0 8px 20px rgba(59,130,246,0.3)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '18px' }}>⬇️</span> 建立備份檔 (.json)
+                    </button>
+                    <button onClick={() => document.getElementById('importFile').click()} style={{ background: '#ffffff', color: '#334155', border: '2px solid #cbd5e1', padding: '14px 24px', borderRadius: '12px', cursor: 'pointer', fontWeight: '900', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px', boxShadow: '0 4px 6px rgba(0,0,0,0.02)' }}>
+                      <span style={{ fontSize: '18px' }}>⬆️</span> 讀取還原檔
+                    </button>
+                    <input type="file" id="importFile" accept=".json" style={{ display: 'none' }} onChange={handleImportData} />
                   </div>
                 </div>
               </div>
-            )}
 
-            {/* ==================================================== 📝 編輯分頁 ==================================================== */}
-            {activeTab === 'data' && (
+              {/* 標的商品庫區塊 */}
               <div className="glass-card" style={{ padding: '32px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', borderBottom: '2px solid #f1f5f9', paddingBottom: '24px', marginBottom: '32px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-                    <h2 style={{ margin: 0, fontSize: '24px', color: '#0f172a', fontWeight: '900' }}>📝 {clientName} 的數據編輯中心</h2>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: '#f8fafc', padding: '8px 16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
-                      <span style={{ fontSize: '14px', color: '#64748b', fontWeight: 'bold' }}>客戶姓名：</span>
-                      <input value={clientName} onChange={e => setClientName(e.target.value)} style={{ ...inputStyle, width: '140px', padding: '8px 12px', background: '#ffffff', color: '#2563eb' }} />
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <span style={{ fontSize: '14px', color: '#64748b', whiteSpace: 'nowrap', fontWeight: 'bold' }}>報表大標題：</span>
-                    <input value={reportTitle} onChange={e => setReportTitle(e.target.value)} style={{ ...inputStyle, flex: 1, padding: '12px 16px', fontSize: '15px' }} placeholder="例如：115 年度 投資配息與再投入績效追蹤" />
-                  </div>
-                </div>
+                <h2 style={{ marginTop: 0, marginBottom: '20px', borderBottom: '2px solid #f1f5f9', paddingBottom: '16px', fontSize: '22px', color: '#0f172a', fontWeight: '900' }}>📦 全域標的商品庫</h2>
+                <p style={{ fontSize: '14px', color: '#64748b', marginBottom: '32px', lineHeight: '1.6' }}>在此統一管理投資標的，編輯數據時可快速選取，系統會自動帶入專屬幣別。</p>
                 
-                <h3 style={{ marginTop: 0, color: '#0f172a', marginBottom: '20px', fontSize: '18px', fontWeight: '800' }}>💼 帳戶基本資料設定</h3>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', marginBottom: '40px' }}>
-                  {accounts.map(acc => {
-                    const accSym = getSym(acc.currency || 'TWD');
-                    return (
-                      <div key={acc.id} style={{ flex: '1 1 320px', background: '#ffffff', padding: '24px', borderRadius: '20px', border: `2px solid ${theme.accountColors[acc.id] || '#e2e8f0'}`, boxSizing: 'border-box', position: 'relative', boxShadow: '0 10px 25px rgba(0,0,0,0.03)' }}>
-                        {accounts.length > 1 && (
-                          <button onClick={() => setDeleteConfirm({ show: true, id: acc.id, type: 'account' })} style={{ position: 'absolute', top: '16px', right: '16px', background: '#fee2e2', color: '#ef4444', border: 'none', width: '32px', height: '32px', borderRadius: '50%', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>✕</button>
-                        )}
-                        
-                        <div style={{ marginBottom: '20px', paddingRight: '24px' }}>
-                          <label style={{ ...labelStyle, color: theme.accountColors[acc.id] }}>保單號碼與投保日期</label>
-                          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                            <input value={acc.acc} onChange={e => handleAccountChange(acc.id, 'acc', e.target.value)} style={{ ...inputStyle, flex: '1 1 130px' }} placeholder="保單號碼 (同號將合併)" />
-                            <input type="text" value={acc.policyDate || ''} onChange={e => handleAccountChange(acc.id, 'policyDate', e.target.value)} style={{ ...inputStyle, flex: '1 1 130px' }} placeholder="投保日 (例: 115/05/11)" />
-                          </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '20px' }}>
+                  {products.map((p, idx) => (
+                    <div key={p.id} style={{ display: 'flex', gap: '12px', background: '#f8fafc', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0', alignItems: 'center', boxShadow: '0 4px 6px rgba(0,0,0,0.02)' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, gap: '12px' }}>
+                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                          <span style={{ background: '#e2e8f0', color: '#475569', padding: '4px 8px', borderRadius: '6px', fontSize: '12px', fontWeight: '800' }}>#{idx + 1}</span>
+                          <input value={p.name} onChange={e => handleUpdateProduct(p.id, 'name', e.target.value)} placeholder="標的名稱 (如: 鑫穩健-A1)" style={{ ...inputStyle, flex: 1, padding: '8px 12px' }} />
                         </div>
-
-                        <div style={{ marginBottom: '20px' }}>
-                          <label style={labelStyle}>選擇投資標的</label>
-                          <select 
-                            value={acc.name} 
-                            onChange={e => {
-                              const newName = e.target.value; handleAccountChange(acc.id, 'name', newName);
-                              const prod = products.find(p => p.name === newName); if (prod) handleAccountChange(acc.id, 'currency', prod.currency);
-                            }} 
-                            style={{ ...selectStyle, color: '#0f172a' }}
-                          >
-                            <option value="" disabled>-- 請選擇標的 --</option>
-                            {acc.name && !products.find(p => p.name === acc.name) && <option value={acc.name}>{acc.name}</option>}
-                            {products.map(p => (
-                              <option key={p.id} value={p.name}>{p.name}</option>
-                            ))}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <span style={{ fontSize: '13px', color: '#64748b', fontWeight: 'bold' }}>預設幣別：</span>
+                          <select value={p.currency} onChange={e => handleUpdateProduct(p.id, 'currency', e.target.value)} style={{ ...selectStyle, flex: 1, padding: '8px 12px', color: '#0284c7', backgroundPosition: 'right .5rem top 50%' }}>
+                            <option value="TWD">🇹🇼 NT$ 新台幣</option>
+                            <option value="USD">🇺🇸 US$ 美元</option>
                           </select>
                         </div>
-
-                        <div style={{ marginBottom: '20px' }}>
-                          <label style={labelStyle}>初始投入 / 單位數</label>
-                          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                            <div style={{ flex: '1 1 140px', display: 'flex', background: '#f8fafc', borderRadius: '8px', overflow: 'hidden', border: '1px solid #cbd5e1', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.02)' }}>
-                              <select value={acc.currency || 'TWD'} onChange={e => handleAccountChange(acc.id, 'currency', e.target.value)} style={{ background: '#e2e8f0', color: '#0369a1', border: 'none', padding: '0 10px', outline: 'none', cursor: 'pointer', fontWeight: '800', fontSize: '13px' }}>
-                                <option value="TWD">NT$</option>
-                                <option value="USD">US$</option>
-                              </select>
-                              <input type="number" value={acc.invest} onChange={e => handleAccountChange(acc.id, 'invest', e.target.value)} style={{ flex: 1, background: 'transparent', border: 'none', color: '#0f172a', padding: '10px 12px', width: '100%', outline: 'none', fontWeight: '600' }} placeholder={`金額`} />
-                            </div>
-                            <input type="number" value={acc.units} onChange={e => handleAccountChange(acc.id, 'units', e.target.value)} style={{ ...inputStyle, flex: '1 1 100px' }} placeholder="單位數" />
-                          </div>
-                        </div>
-                        <div style={{ fontSize: '13px', color: '#10b981', fontWeight: '800', background: '#ecfdf5', padding: '8px 12px', borderRadius: '8px', display: 'inline-block' }}>💡 獨立總投入：{accSym} {(accountTotals.find(a => a.id === acc.id)?.totalInvest || 0).toLocaleString()}</div>
                       </div>
-                    );
-                  })}
-                  <div onClick={handleAddAccount} style={{ flex: '1 1 320px', border: '2px dashed #bae6fd', borderRadius: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', minHeight: '220px', color: '#0284c7', fontWeight: '900', fontSize: '18px', background: '#f0f9ff', transition: 'all 0.2s', boxShadow: '0 4px 15px rgba(2,132,199,0.05)' }}>
-                    ➕ 新增一欄 (新帳戶)
+                      <button onClick={() => setDeleteConfirm({ show: true, id: p.id, type: 'product' })} style={{ background: '#fee2e2', color: '#ef4444', border: 'none', width: '40px', height: '40px', borderRadius: '10px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', transition: 'background 0.2s' }}>✕</button>
+                    </div>
+                  ))}
+                  <div onClick={handleAddProduct} style={{ border: '2px dashed #d8b4fe', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', minHeight: '120px', color: '#9333ea', fontWeight: '900', fontSize: '16px', background: '#faf5ff', transition: 'all 0.2s' }}>
+                    ➕ 新增商品至庫存
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
 
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                  <h3 style={{ margin: 0, color: '#0f172a', fontSize: '18px', fontWeight: '800' }}>📅 每月撥回金額明細</h3>
+          {/* ==================================================== 📝 編輯分頁 ==================================================== */}
+          {activeTab === 'data' && (
+            <div className="glass-card" style={{ padding: '32px', width: '100%', maxWidth: '1240px', marginTop: '24px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', borderBottom: '2px solid #f1f5f9', paddingBottom: '24px', marginBottom: '32px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+                  <h2 style={{ margin: 0, fontSize: '24px', color: '#0f172a', fontWeight: '900' }}>📝 {clientName} 的數據編輯中心</h2>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: '#f8fafc', padding: '8px 16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                    <span style={{ fontSize: '14px', color: '#64748b', fontWeight: 'bold' }}>客戶姓名：</span>
+                    <input value={clientName} onChange={e => setClientName(e.target.value)} style={{ ...inputStyle, width: '140px', padding: '8px 12px', background: '#ffffff', color: '#2563eb' }} />
+                  </div>
                 </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <span style={{ fontSize: '14px', color: '#64748b', whiteSpace: 'nowrap', fontWeight: 'bold' }}>報表大標題：</span>
+                  <input value={reportTitle} onChange={e => setReportTitle(e.target.value)} style={{ ...inputStyle, flex: 1, padding: '12px 16px', fontSize: '15px' }} placeholder="例如：115 年度 投資配息與再投入績效追蹤" />
+                </div>
+              </div>
+              
+              <h3 style={{ marginTop: 0, color: '#0f172a', marginBottom: '20px', fontSize: '18px', fontWeight: '800' }}>💼 帳戶基本資料設定</h3>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', marginBottom: '40px' }}>
+                {accounts.map(acc => {
+                  const accSym = getSym(acc.currency || 'TWD');
+                  return (
+                    <div key={acc.id} style={{ flex: '1 1 320px', background: '#ffffff', padding: '24px', borderRadius: '20px', border: `2px solid ${theme.accountColors[acc.id] || '#e2e8f0'}`, boxSizing: 'border-box', position: 'relative', boxShadow: '0 10px 25px rgba(0,0,0,0.03)' }}>
+                      {accounts.length > 1 && (
+                        <button onClick={() => setDeleteConfirm({ show: true, id: acc.id, type: 'account' })} style={{ position: 'absolute', top: '16px', right: '16px', background: '#fee2e2', color: '#ef4444', border: 'none', width: '32px', height: '32px', borderRadius: '50%', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>✕</button>
+                      )}
+                      
+                      <div style={{ marginBottom: '20px', paddingRight: '24px' }}>
+                        <label style={{ ...labelStyle, color: theme.accountColors[acc.id] }}>保單號碼與投保日期</label>
+                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                          <input value={acc.acc} onChange={e => handleAccountChange(acc.id, 'acc', e.target.value)} style={{ ...inputStyle, flex: '1 1 130px' }} placeholder="保單號碼" />
+                          <input type="text" value={acc.policyDate || ''} onChange={e => handleAccountChange(acc.id, 'policyDate', e.target.value)} style={{ ...inputStyle, flex: '1 1 130px' }} placeholder="投保日 (例: 115/05/11)" />
+                        </div>
+                      </div>
 
-                <div style={{ overflowX: 'auto', marginBottom: '24px', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 4px 15px rgba(0,0,0,0.02)' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: `${450 + accounts.length * 220}px`, background: '#ffffff' }}>
-                    <thead>
-                      <tr style={{ background: '#f8fafc' }}>
-                        <th style={{ padding: '12px', color: '#475569', fontSize: '13px', width: '100px', borderBottom: '2px solid #e2e8f0' }}>  月份 </th>
-                        {accounts.map(acc => (
-                          <th key={acc.id} style={{ padding: '16px', color: theme.accountColors[acc.id], fontSize: '14px', borderBottom: '2px solid #e2e8f0' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              <div>{acc.acc}</div><span>{acc.name || '(未選擇標的)'} </span>
-                            </div>
-                          </th>
-                        ))}
-                        <th style={{ padding: '16px', color: theme.lineTotal, fontSize: '14px', borderBottom: '2px solid #e2e8f0', width: '150px' }}>總累計 ({globalSym})</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rawMonthlyData.map((row, index) => (
-                        <tr key={index} style={{ borderBottom: '1px solid #f1f5f9', transition: 'background 0.2s' }}>
-                          <td style={{ padding: '12px 16px' }}>
-                            <input value={row.month} onChange={e => handleDataChange(index, 'month', e.target.value)} style={{ ...inputStyle, padding: '8px 12px' }} />
-                          </td>
-                          {accounts.map(acc => {
-                            const isUnits = row[`${acc.id}_type`] === '累積單位數';
-                            return (
-                              <td key={acc.id} style={{ padding: '12px 16px' }}>
-                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <div style={{ marginBottom: '20px' }}>
+                        <label style={labelStyle}>選擇投資標的</label>
+                        <select 
+                          value={acc.name} 
+                          onChange={e => {
+                            const newName = e.target.value; handleAccountChange(acc.id, 'name', newName);
+                            const prod = products.find(p => p.name === newName); if (prod) handleAccountChange(acc.id, 'currency', prod.currency);
+                          }} 
+                          style={{ ...selectStyle, color: '#0f172a' }}
+                        >
+                          <option value="" disabled>-- 請選擇標的 --</option>
+                          {acc.name && !products.find(p => p.name === acc.name) && <option value={acc.name}>{acc.name}</option>}
+                          {products.map(p => (
+                            <option key={p.id} value={p.name}>{p.name}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div style={{ marginBottom: '20px' }}>
+                        <label style={labelStyle}>初始投入 / 單位數</label>
+                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                          <div style={{ flex: '1 1 140px', display: 'flex', background: '#f8fafc', borderRadius: '8px', overflow: 'hidden', border: '1px solid #cbd5e1', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.02)' }}>
+                            <select value={acc.currency || 'TWD'} onChange={e => handleAccountChange(acc.id, 'currency', e.target.value)} style={{ background: '#e2e8f0', color: '#0369a1', border: 'none', padding: '0 10px', outline: 'none', cursor: 'pointer', fontWeight: '800', fontSize: '13px' }}>
+                              <option value="TWD">NT$</option>
+                              <option value="USD">US$</option>
+                            </select>
+                            <input type="number" value={acc.invest} onChange={e => handleAccountChange(acc.id, 'invest', e.target.value)} style={{ flex: 1, background: 'transparent', border: 'none', color: '#0f172a', padding: '10px 12px', width: '100%', outline: 'none', fontWeight: '600' }} placeholder={`金額`} />
+                          </div>
+                          <input type="number" value={acc.units} onChange={e => handleAccountChange(acc.id, 'units', e.target.value)} style={{ ...inputStyle, flex: '1 1 100px' }} placeholder="單位數" />
+                        </div>
+                      </div>
+                      <div style={{ fontSize: '13px', color: '#10b981', fontWeight: '800', background: '#ecfdf5', padding: '8px 12px', borderRadius: '8px', display: 'inline-block' }}>💡 獨立總投入：{accSym} {(accountTotals.find(a => a.id === acc.id)?.totalInvest || 0).toLocaleString()}</div>
+                    </div>
+                  );
+                })}
+                <div onClick={handleAddAccount} style={{ flex: '1 1 320px', border: '2px dashed #bae6fd', borderRadius: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', minHeight: '220px', color: '#0284c7', fontWeight: '900', fontSize: '18px', background: '#f0f9ff', transition: 'all 0.2s', boxShadow: '0 4px 15px rgba(2,132,199,0.05)' }}>
+                  ➕ 新增一欄 (新帳戶)
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h3 style={{ margin: 0, color: '#0f172a', fontSize: '18px', fontWeight: '800' }}>📅 每月撥回金額明細</h3>
+              </div>
+
+              <div style={{ overflowX: 'auto', marginBottom: '24px', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 4px 15px rgba(0,0,0,0.02)' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: `${450 + accounts.length * 220}px`, background: '#ffffff' }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc' }}>
+                      <th style={{ padding: '12px', color: '#475569', fontSize: '13px', width: '100px', borderBottom: '2px solid #e2e8f0' }}>   月份 </th>
+                      {accounts.map(acc => (
+                        <th key={acc.id} style={{ padding: '16px', color: theme.accountColors[acc.id], fontSize: '14px', borderBottom: '2px solid #e2e8f0' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div>{acc.acc}</div><span>{acc.name || '(未選擇標的)'} </span>
+                          </div>
+                        </th>
+                      ))}
+                      <th style={{ padding: '16px', color: theme.lineTotal, fontSize: '14px', borderBottom: '2px solid #e2e8f0', width: '150px' }}>總累計 ({globalSym})</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rawMonthlyData.map((row, index) => (
+                      <tr key={index} style={{ borderBottom: '1px solid #f1f5f9', transition: 'background 0.2s' }}>
+                        <td style={{ padding: '12px 16px' }}>
+                          <input value={row.month} onChange={e => handleDataChange(index, 'month', e.target.value)} style={{ ...inputStyle, padding: '8px 12px' }} />
+                        </td>
+                        {accounts.map(acc => {
+                          const isUnits = row[`${acc.id}_type`] === '累積單位數';
+                          return (
+                            <td key={acc.id} style={{ padding: '12px 16px' }}>
+                              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                                   <input 
                                     type="number" 
                                     value={row[acc.id] !== undefined ? row[acc.id] : ''} 
@@ -691,38 +975,14 @@ rawMonthlyData.forEach(row => {
                               </td>
                             );
                           })}
-                          <td style={{ padding: '12px 16px', color: theme.lineTotal, fontWeight: '900', fontSize: '14px' }}>{globalSym} {monthlyData[index].TotalCum.toLocaleString()}</td>
+                          <td style={{ padding: '12px 16px', color: theme.lineTotal, fontWeight: '900', fontSize: '14px' }}>
+                            {globalSym} {monthlyData[index].TotalCum !== null ? monthlyData[index].TotalCum.toLocaleString() : '-'}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-                
-                <h3 style={{ color: '#0f172a', marginBottom: '20px', borderBottom: '2px solid #f1f5f9', paddingBottom: '16px', fontSize: '18px', fontWeight: '800' }}>⭐ 重大投資紀錄編輯</h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '24px' }}>
-                  {eventRecords.length === 0 && <div style={{ fontSize: '14px', color: '#94a3b8', textAlign: 'center', padding: '40px 0', border: '2px dashed #e2e8f0', borderRadius: '16px', background: '#f8fafc', fontWeight: 'bold' }}>無新增投資資訊</div>}
-                  {eventRecords.map((ev) => (
-                    <div key={ev.id} style={{ display: 'flex', gap: '12px', background: '#f8fafc', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0', alignItems: 'center', flexWrap: 'wrap', boxShadow: '0 4px 10px rgba(0,0,0,0.02)' }}>
-                      <input value={ev.icon} onChange={e => handleUpdateEvent(ev.id, 'icon', e.target.value)} style={{ ...inputStyle, width: '50px', textAlign: 'center', fontSize: '20px', padding: '8px' }} title="可輸入 Emoji" />
-                      <input type="text" value={ev.date} onChange={e => handleUpdateEvent(ev.id, 'date', e.target.value)} style={{ ...inputStyle, width: '130px' }} placeholder="年月 (例: 115/05)" />
-                      <select value={ev.target} onChange={e => handleUpdateEvent(ev.id, 'target', e.target.value)} style={{ ...selectStyle, flex: '1 1 150px' }}>
-                        {accounts.map(acc => (
-                          <option key={acc.id} value={acc.id}>{acc.name || '未選擇標的'} ({acc.acc || '未命名保單'})</option>
-                        ))}
-                      </select>
-                      <div style={{ display: 'flex', background: '#f8fafc', borderRadius: '8px', overflow: 'hidden', width: '160px', border: '1px solid #cbd5e1', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.02)' }}>
-                        <select value={ev.currency || 'TWD'} onChange={e => handleUpdateEvent(ev.id, 'currency', e.target.value)} style={{ background: '#e2e8f0', color: '#0369a1', border: 'none', padding: '0 10px', outline: 'none', cursor: 'pointer', fontWeight: '800', fontSize: '13px' }}>
-                          <option value="TWD">NT$</option>
-                          <option value="USD">US$</option>
-                        </select>
-                        <input type="number" value={ev.amount} onChange={e => handleUpdateEvent(ev.id, 'amount', e.target.value)} placeholder="金額" style={{ flex: 1, background: 'transparent', border: 'none', color: '#0f172a', padding: '10px', width: '100%', outline: 'none', fontWeight: '600' }} />
-                      </div>
-                      <button onClick={() => setDeleteConfirm({ show: true, id: ev.id, type: 'event' })} style={{ background: '#fee2e2', color: '#ef4444', border: 'none', padding: '10px 16px', borderRadius: '10px', cursor: 'pointer', fontWeight: 'bold' }}>✕ 移除</button>
-                    </div>
-                  ))}
-                </div>
-                <button onClick={handleAddEvent} style={{ background: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1', padding: '12px 24px', borderRadius: '12px', cursor: 'pointer', fontWeight: '800', display: 'inline-flex', alignItems: 'center', gap: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>➕ 新增一筆紀錄</button>
-                <div style={{ textAlign: 'right', marginTop: '40px' }}><button onClick={() => setActiveTab('dashboard')} style={{ background: 'linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%)', color: C.white, border: 'none', padding: '16px 40px', borderRadius: '14px', fontWeight: '900', cursor: 'pointer', fontSize: '16px', boxShadow: '0 10px 25px rgba(37,99,235,0.3)', transition: 'transform 0.2s' }}>✨ 完成並前往華麗預覽 ➔</button></div>
               </div>
             )}
 
@@ -730,7 +990,7 @@ rawMonthlyData.forEach(row => {
             {activeTab === 'dashboard' && (
               <>
                 {/* 控制面板 */}
-                <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px 28px', border: '1px solid #ffffff' }}>
+                <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px 28px', border: '1px solid #ffffff', width: '100%', maxWidth: '1400px', marginTop: '24px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '20px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap', flex: '1 1 350px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: '#f8fafc', padding: '8px 16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
@@ -754,6 +1014,38 @@ rawMonthlyData.forEach(row => {
                         </div>
                       )}
                       <button onClick={handleSaveImage} disabled={isSaving} style={{ background: isSaving ? '#cbd5e1' : 'linear-gradient(135deg, #f6d365 0%, #fda085 100%)', color: '#fff', border: 'none', padding: '12px 28px', borderRadius: '14px', fontWeight: '900', boxShadow: isSaving ? 'none' : '0 10px 25px rgba(253, 160, 133, 0.4), inset 0 2px 4px rgba(255,255,255,0.4)', cursor: 'pointer', whiteSpace: 'nowrap', fontSize: '15px', textShadow: '0 1px 2px rgba(0,0,0,0.1)', transition: 'all 0.2s', transform: isSaving ? 'scale(0.98)' : 'scale(1)' }}>📸 產生高清圖片</button>
+                      
+                      {/* 💡 新增：一鍵打包下載全體客戶報表按鈕 (採用優雅的皇家靛藍漸變色) */}
+                      <button 
+                        onClick={() => {
+                          if (clients.length === 0) {
+                            showToast('目前沒有任何客戶資料可供匯出。', 'error');
+                            return;
+                          }
+                          setOriginalClientIdBeforeBatch(activeClientId);
+                          setIsSaving(true);
+                          setBatchSavedImages([]);
+                          setBatchIndex(0); // 觸發批量序列捕捉
+                        }} 
+                        disabled={isSaving} 
+                        style={{ 
+                          background: isSaving ? '#cbd5e1' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', 
+                          color: '#fff', 
+                          border: 'none', 
+                          padding: '12px 28px', 
+                          borderRadius: '14px', 
+                          fontWeight: '900', 
+                          boxShadow: isSaving ? 'none' : '0 10px 25px rgba(118, 75, 162, 0.3), inset 0 2px 4px rgba(255,255,255,0.4)', 
+                          cursor: 'pointer', 
+                          whiteSpace: 'nowrap', 
+                          fontSize: '15px', 
+                          textShadow: '0 1px 2px rgba(0,0,0,0.1)', 
+                          transition: 'all 0.2s', 
+                          transform: isSaving ? 'scale(0.98)' : 'scale(1)' 
+                        }}
+                      >
+                        📦 一鍵打包下載全部報表 (ZIP)
+                      </button>
                     </div>
                   </div>
 
@@ -762,7 +1054,7 @@ rawMonthlyData.forEach(row => {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: '#f8fafc', padding: '8px 16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
                       <span style={{ color: '#475569', fontSize: '14px', whiteSpace: 'nowrap', fontWeight: 'bold' }}>🖼️ 報表自訂底圖：</span>
                       <button onClick={() => document.getElementById('bgUploadInput').click()} style={{ background: '#3b82f6', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: '8px', fontSize: '13px', cursor: 'pointer', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(59,130,246,0.1)' }}>
-                        📤 上傳底圖 
+                        📤 上傳底圖
                       </button>
                       <input type="file" id="bgUploadInput" accept="image/*" style={{ display: 'none' }} onChange={handleBgUpload} />
                       
@@ -780,9 +1072,8 @@ rawMonthlyData.forEach(row => {
                       )}
                     </div>
                   </div>
-
                   
-                  {/* 分區字體控制中心 */}
+                  {/* 字體縮放控制中心 */}
                   <div style={{ width: '100%', borderTop: '2px dashed #f1f5f9', paddingTop: '16px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
                     <span style={{ color: '#64748b', fontSize: '14px', whiteSpace: 'nowrap', fontWeight: '800' }}>🔠 字體縮放控制：</span>
                     <ScaleControl label="整體" scaleKey="global" />
@@ -806,12 +1097,14 @@ rawMonthlyData.forEach(row => {
                 </div>
 
                 {/* --- 報表渲染外層 --- */}
-                <div style={{ width: '100%', overflowX: 'auto', borderRadius: '28px', boxShadow: '0 30px 60px rgba(0,0,0,0.08)', WebkitOverflowScrolling: 'touch', background: '#ffffff', border: '1px solid rgba(255,255,255,0.8)' }}>
+                <div style={{ width: '100%', overflowX: 'auto', borderRadius: '28px', boxShadow: '0 30px 60px rgba(0,0,0,0.08)', WebkitOverflowScrolling: 'touch', background: '#ffffff', border: '1px solid rgba(255,255,255,0.8)', marginTop: '24px' }}>
                   
-                  {/* 報表本體：1200px (支援客製化底圖) */}
+                  {/* 報表本體容器：從 1200px 改為 100% 寬度，並維持 minWidth 為 1200px。
+                      💡 修正：這會使報表隨外層最大 1400px 自適應拉伸，大幅填滿兩側多餘留白，讓寬螢幕視覺效果更震撼 */}
                   <div ref={reportRef} style={{ 
-                    width: '1200px', 
+                    width: '100%', 
                     minWidth: '1200px', 
+                    margin: '0 auto',
                     background: bgImage ? `url(${bgImage}) no-repeat center center / cover` : 'linear-gradient(180deg, #ffffff 0%, #fcfdfe 100%)', 
                     padding: '48px', 
                     boxSizing: 'border-box',
@@ -822,7 +1115,7 @@ rawMonthlyData.forEach(row => {
                     {/* Header 頁首資訊 */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', borderBottom: `4px solid ${theme.lineTotal}`, paddingBottom: '20px', marginBottom: '32px' }}>
                       <div>
-                        <div style={{ fontSize: 13 * sHeader, letterSpacing: '4px', color: '#64748b', fontWeight: '900', textTransform: 'uppercase', marginBottom: '6px' }}>
+                        <div style={{ fontSize: 13 * sHeader, letterSpacing: '4px', color: bgImage ? '#475569' : '#64748b', fontWeight: '900', textTransform: 'uppercase', marginBottom: '6px' }}>
                           <EditableTitle value={getTitle('subHeader', 'Investment Performance Dashboard')} onSave={v => updateTitle('subHeader', v)} />
                         </div>
                         <div style={{ fontSize: 36 * sHeader, fontWeight: 900, color: '#0f172a', whiteSpace: 'nowrap', textShadow: '0 2px 10px rgba(0,0,0,0.05)' }}>
@@ -831,26 +1124,23 @@ rawMonthlyData.forEach(row => {
                       </div>
                       <div style={{ textAlign: 'right' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '12px' }}>
-                          <div style={{ fontSize: 26 * sHeader, color: '#1e293b', fontWeight: 800, background: '#f1f5f9', padding: '8px 24px', borderRadius: '20px' }}>
+                          <div style={{ fontSize: 26 * sHeader, color: '#1e293b', fontWeight: 800, background: bgImage ? `rgba(241, 245, 249, ${bgOpacity})` : '#f1f5f9', padding: '8px 24px', borderRadius: '20px', backdropFilter: bgImage ? 'blur(10px)' : 'none', border: bgImage ? '1px solid rgba(255,255,255,0.3)' : 'none' }}>
                             <EditableTitle value={clientName} onSave={setClientName} hoverBorder={`1px dashed #1e293b`} />
                           </div>
                         </div>
                       </div>
                     </div>
 
-                    {/* 🏆 KPI 區塊 - 立體水晶質感 */}
+                    {/* 🏆 KPI 區塊 - 使用 SVG 取代 Emoji，保證 html2canvas 導出時不產生灰色背景色差方框 */}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', marginBottom: '32px' }}>
                       
-                      {/* 頂部大 KPI */}
-                      {/* 🏆 KPI 區塊 - 拆分為左中右三格 */}
-                    
                       <div style={{ 
-  display: 'grid', 
-  gridTemplateColumns: 'repeat(3, 1fr)', // 切成三欄，每欄等寬
-  gap: '16px', 
-  width: '100%' 
-}}>
-                      {/* 1. 全年累積現金給付 KPI 卡片 */}
+                        display: 'grid', 
+                        gridTemplateColumns: 'repeat(3, 1fr)', 
+                        gap: '16px', 
+                        width: '100%' 
+                      }}>
+                        {/* 1. 全年累積現金給付 KPI 卡片 */}
                         <div style={{ 
                           ...cardStyle, 
                           background: 'linear-gradient(135deg, #EA7500, #EA7500)', 
@@ -925,16 +1215,15 @@ rawMonthlyData.forEach(row => {
                         </div>
                       </div>
 
-                      {/* 動態合併保單貢獻卡 (已使用註解隱藏) */}
-                      {/* 
-                       <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fit, minmax(200px, 1fr))`, gap: '24px' }}>
+                      {/* 【隱藏代碼：動態合併保單貢獻卡】依照指示使用 React JSX 註解將此區塊隱藏 */}
+                      {/* <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fit, minmax(200px, 1fr))`, gap: '24px' }}>
                         {groupedByPolicy.map((gAcc, idx) => {
                            const pct = finalTotal === 0 ? 0 : ((gAcc.totalDividend / finalTotal) * 100).toFixed(1);
                            const accSym = gAcc.currency === 'MIXED' ? '$' : getSym(gAcc.currency || 'TWD');
                            const displayName = gAcc.policyNo !== '未命名保單' ? `保單 ${gAcc.policyNo}` : gAcc.names.join(' + ');
 
                            return (
-                             <div key={gAcc.key} style={{ ...cardStyle, background: `linear-gradient(135deg,${theme.heroBg}, ${theme.heroBg}E6)`, color: C.white, border: 'none', boxShadow: '0 15px 30px rgba(0,0,0,0.1), inset 0 2px 4px rgba(255,255,255,0.2)' }}>
+                             <div key={gAcc.key} style={{ ...cardStyle, background: `linear-gradient(135deg,${theme.heroBg}, ${theme.heroBg}E6)`, color: C.white, border: 'none', boxShadow: '0 15px 30px rgba(0,0,0,0.1)' }}>
                                <div style={{ fontSize: 13 * sKpi, color: 'rgba(255,255,255,0.8)', marginBottom: '8px', fontWeight: 'bold' }}>
                                  {displayName}
                                </div>
@@ -950,22 +1239,22 @@ rawMonthlyData.forEach(row => {
                              </div>
                            );  
                         })}    
-                      </div> 
+                      </div>
                       */}
                     </div> 
 
-                    {/* 下方視圖*/}
+                    {/* 下方資料視圖與明細圖表 */}
                     <div style={{ display: 'grid', flexDirection: 'column', gap: '24px' }}>
                       
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-                        {/* 圖表卡片 */}
+                        {/* 圖表卡片區 */}
                         <div style={{ ...cardStyle, padding: '32px' }}>
                           <div style={{ fontSize: 18 * sChart, fontWeight: 900, color: '#0f172a', marginBottom: '24px', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', alignItems: 'center' }}>
-                            <span><EditableTitle value={getTitle('chart', '📊 各保單每月撥回與再投入累積')} onSave={v => updateTitle('chart', v)} /></span>
-                            <div style={{ fontSize: 12 * sChart, display: 'flex', flexWrap: 'wrap', gap: '12px', fontWeight: 'bold', background:bgImage ? `rgba(248, 250, 252, ${bgOpacity})` : '#f8fafc', padding: '6px 12px', borderRadius: '12px' }}>
+                            <span><EditableTitle value={getTitle('chart', '📊 各保單累計撥回明細')} onSave={v => updateTitle('chart', v)} /></span>
+                            <div style={{ fontSize: 12 * sChart, display: 'flex', flexWrap: 'wrap', gap: '12px', fontWeight: 'bold', background: bgImage ? `rgba(248, 250, 252, ${bgOpacity})` : '#f8fafc', padding: '6px 12px', borderRadius: '12px' }}>
                               {groupedByPolicy.map(group => (
                                  <span key={group.key} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                   <span style={{ color: group.color, fontSize: '16px' }}>■</span> 保單 {group.policyNo}
+                                   <span style={{ color: group.color, fontSize: '16px' }}>■</span>  {group.policyNo}
                                  </span>
                               ))}
                               <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -973,35 +1262,46 @@ rawMonthlyData.forEach(row => {
                               </span>
                             </div>
                           </div>
-
-                          {/* 趨勢累積柱狀、折線圖：改採用「每張保單累積」呈現 */}
+                          
+                          {/* 趨勢累積柱狀、折線圖：採用「累加（累積）」與「動態有效月份截斷」演算法 */}
                           <div style={{ height: '360px', width: '100%', marginBottom: '24px' }}>
                             <ResponsiveContainer width="100%" height="100%">
-                              <ComposedChart data={monthlyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                              {/* 修正一：將邊距的 left 改為 25，保留足夠寬度防止數值最左位數被截斷 */}
+                              <ComposedChart data={monthlyData} margin={{ top: 10, right: 15, left: 25, bottom: 0 }}>
                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
                                 <XAxis dataKey="month" tick={{ fontSize: 12 * sChart, fill: '#64748b', fontWeight: 'bold' }} axisLine={{ stroke: '#cbd5e1' }} tickLine={false} />
-                                <YAxis yAxisId="left" tick={{ fontSize: 11 * sChart, fill: '#64748b', fontWeight: 'bold' }} axisLine={false} tickLine={false} />
-                                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 * sChart, fill: theme.lineTotal, fontWeight: '900' }} axisLine={false} tickLine={false} />
+                                
+                                {/* 修正二：將 yAxisId 設定在同一個單一的 "left" 上，加上 tickFormatter 優雅格式化 */}
+                                <YAxis 
+                                  yAxisId="left" 
+                                  tick={{ fontSize: 11 * sChart, fill: '#64748b', fontWeight: 'bold' }} 
+                                  axisLine={false} 
+                                  tickLine={false} 
+                                  tickFormatter={(v) => v.toLocaleString()}
+                                />
+                                
                                 <Tooltip itemStyle={{ fontSize: 13 * sChart, fontWeight: 'bold' }} labelStyle={{ fontSize: 13 * sChart, color: '#0f172a', fontWeight: '900', marginBottom: '8px' }} contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 15px 35px rgba(0,0,0,0.1)', padding: '16px' }} formatter={(v, n) => {
+                                   if (v === null || v === undefined) return null; // 避開無數據月份在 Tooltip 產生無效或 NaN 項目
                                    if (n === 'TotalCum') return [`${globalSym} ${Number(v).toLocaleString()}`, '總累計'];
                                    
                                    // 解析保單柱狀項名稱
                                    if (n.startsWith('policy_')) {
                                      const pKey = n.replace('policy_', '');
                                      const pGroup = groupedByPolicy.find(g => g.key === pKey);
-                                     return [`${pGroup ? getSym(pGroup.currency || 'TWD') : '$'} ${Number(v).toLocaleString()}`, pGroup ? `保單 ${pGroup.policyNo}` : n];
+                                     return [`${pGroup ? getSym(pGroup.currency || 'TWD') : '$'} ${Number(v).toLocaleString()}`, pGroup ? `${pGroup.policyNo}` : n];
                                    }
                                    
                                    const acc = accounts.find(a => a.id === n);
                                    return [`${acc ? getSym(acc.currency || 'TWD') : '$'} ${Number(v).toLocaleString()}`, acc?.name || n];
                                 }} />
                                 
-
-                                 {/* 保單堆疊柱狀渲染 */}
+                                {/* 保單堆疊柱狀圖：統一綁定到共享的 yAxisId="left" 上 */}
                                 {groupedByPolicy.map((group, idx) => (
-                                  <Bar key={group.key} yAxisId="left" dataKey={`${group.key}_chart`} name={group.key} stackId="a" fill={group.color} radius={idx === groupedByPolicy.length - 1 ? [6, 6, 0, 0] : [0, 0, 0, 0]} isAnimationActive={!isSaving} />
+                                  <Bar key={group.key} yAxisId="left" dataKey={`policy_${group.key}`} name={`policy_${group.key}`} stackId="a" fill={group.color} radius={idx === groupedByPolicy.length - 1 ? [6, 6, 0, 0] : [0, 0, 0, 0]} isAnimationActive={!isSaving} />
                                 ))}
-                                <Line yAxisId="right" type="monotone" dataKey="TotalCum" name="TotalCum" stroke={theme.lineTotal} strokeWidth={4} dot={{ r: 5, fill: '#fff', stroke: theme.lineTotal, strokeWidth: 3 }} activeDot={{ r: 8, fill: theme.lineTotal, stroke: '#fff', strokeWidth: 2 }} isAnimationActive={!isSaving} />
+                                
+                                {/* 修正三：黃色總計折線圖一併綁定到 yAxisId="left"，精確同步刻度，消滅垂直數值衝突 */}
+                                <Line yAxisId="left" type="monotone" dataKey="TotalCum" name="TotalCum" stroke={theme.lineTotal} strokeWidth={4} dot={{ r: 5, fill: '#fff', stroke: theme.lineTotal, strokeWidth: 3 }} activeDot={{ r: 8, fill: theme.lineTotal, stroke: '#fff', strokeWidth: 2 }} isAnimationActive={!isSaving} />
                               </ComposedChart>
                             </ResponsiveContainer>
                           </div>
@@ -1014,7 +1314,7 @@ rawMonthlyData.forEach(row => {
                                   <th style={{ padding: '12px', color: '#64748b', borderBottom: '2px solid #e2e8f0' }}>保單號碼</th>
                                   <th style={{ padding: '12px', color: '#64748b', borderBottom: '2px solid #e2e8f0' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
-                                      項目 <ScaleButtons scaleKey="monthly" />
+                                      基金標的 <ScaleButtons scaleKey="monthly" />
                                     </div>
                                   </th>
                                   {monthlyData.map((d, i) => (<th key={i} style={{ padding: '12px', color: '#334155', borderBottom: '2px solid #e2e8f0' }}>{d.month}</th>))}
@@ -1034,7 +1334,7 @@ rawMonthlyData.forEach(row => {
                                         )}
                                         {/* 基金配色直接與所屬保單連動 (group.color) */}
                                         <td style={{ padding: '12px', fontWeight: '900', color: group.color, background: bgImage ? 'rgba(255,255,255,0.1)' : '#ffffff', borderRight: '1px solid #f1f5f9' }}>
-                                          {acc.name || '未選擇標的'}
+                                          {acc.name || '未選擇標對'}
                                         </td>
                                         {monthlyData.map((d, i) => (
                                           <td key={i} style={{ padding: '12px', color: '#475569', fontWeight: 'bold' }}>
@@ -1075,10 +1375,10 @@ rawMonthlyData.forEach(row => {
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>投保日期 <ScaleButtons scaleKey="date" /></div>
                                   </th>
                                   <th style={{ padding: '16px 20px', borderBottom: '2px solid #e2e8f0' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>標的名稱 <ScaleButtons scaleKey="name" /></div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>基金標的 <ScaleButtons scaleKey="name" /></div>
                                   </th>
                                   <th style={{ padding: '16px 0', borderBottom: '2px solid #e2e8f0' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>累計單位數 <ScaleButtons scaleKey="unit" /></div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>目前單位數 <ScaleButtons scaleKey="unit" /></div>
                                   </th>
                                   <th style={{ textAlign: 'right', padding: '16px 20px', borderBottom: '2px solid #e2e8f0' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>總投入 <ScaleButtons scaleKey="invest" /></div>
@@ -1125,7 +1425,8 @@ rawMonthlyData.forEach(row => {
                           </div>
                         </div>
                         
-                        {/* 重大投資紀錄 (已使用 JSX 註解隱藏)
+                        {/* 【隱藏代碼：期間重大投資紀錄】依照指示使用 React JSX 註解將此區塊隱藏 */}
+                        {/*
                         <div style={{ ...cardStyle, flex: 1 }}>
                           <div style={{ fontSize: 18 * sEvents, fontWeight: 900, color: '#0f172a', marginBottom: '20px' }}>
                             <EditableTitle value={getTitle('events', '⭐ 期間重大投資紀錄')} onSave={v => updateTitle('events', v)} />
@@ -1157,9 +1458,9 @@ rawMonthlyData.forEach(row => {
                 </div>
               </>
             )}
-          </div>
+          
 
-          {/* 全域彈窗區 - 華麗亮色版 */}
+          {/* 全域彈窗區 - 高清圖片預覽 */}
           {savedImage && (
             <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.85)', backdropFilter: 'blur(8px)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
               <div style={{ width: '100%', maxWidth: '1000px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
@@ -1168,8 +1469,88 @@ rawMonthlyData.forEach(row => {
               </div>
               <img src={savedImage} alt="投資報表" style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: '24px', boxShadow: '0 25px 50px rgba(0,0,0,0.25)' }} />
             </div>
+          
           )}
 
+          {/* 高質感全域 Toast 提示框 */}
+          {toast.show && (
+            <div style={{
+              position: 'fixed',
+              top: '24px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              background: toast.type === 'success' ? 'rgba(16, 185, 129, 0.95)' : 'rgba(239, 68, 68, 0.95)',
+              color: '#ffffff',
+              padding: '12px 24px',
+              borderRadius: '14px',
+              boxShadow: '0 10px 30px rgba(0,0,0,0.15)',
+              zIndex: 10001,
+              fontWeight: 'bold',
+              backdropFilter: 'blur(8px)',
+              border: '1px solid rgba(255,255,255,0.2)',
+              transition: 'all 0.3s ease',
+              animation: 'slideDown 0.3s ease-out'
+            }}>
+              {toast.message}
+            </div>
+          )}
+
+          {/* 💡 新增：高質感批量打包下載全體客戶進度條 Overlay (僅在 batchIndex >= 0 時彈出) */}
+          {batchIndex !== -1 && (
+            <div style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(15, 23, 42, 0.85)',
+              backdropFilter: 'blur(8px)',
+              zIndex: 10002,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '20px',
+              color: '#ffffff'
+            }}>
+              <div style={{
+                background: '#ffffff',
+                padding: '40px',
+                borderRadius: '24px',
+                width: '100%',
+                maxWidth: '450px',
+                textAlign: 'center',
+                boxShadow: '0 25px 50px rgba(0,0,0,0.3)',
+                color: '#1e293b'
+              }}>
+                <div style={{ fontSize: '48px', marginBottom: '20px' }}>📦</div>
+                <h3 style={{ margin: '0 0 10px 0', fontSize: '20px', fontWeight: '900', color: '#0f172a' }}>
+                  正在批量打包全體客戶報表
+                </h3>
+                <p style={{ color: '#64748b', fontSize: '14px', marginBottom: '24px', fontWeight: '500' }}>
+                  正在產生第 <span style={{ color: '#2563eb', fontWeight: '800' }}>{batchIndex + 1}</span> / {clients.length} 位客戶：
+                  <br />
+                  <span style={{ fontSize: '18px', color: '#0f172a', fontWeight: '900', marginTop: '8px', display: 'inline-block' }}>
+                    【{clients[batchIndex]?.clientName || '未命名客戶'}】
+                  </span>
+                </p>
+                
+                {/* 進度條外框 */}
+                <div style={{ width: '100%', height: '8px', background: '#f1f5f9', borderRadius: '4px', overflow: 'hidden', marginBottom: '12px' }}>
+                  <div style={{ 
+                    width: `${((batchIndex + 1) / clients.length) * 100}%`, 
+                    height: '100%', 
+                    background: 'linear-gradient(90deg, #3b82f6, #8b5cf6)', 
+                    borderRadius: '4px',
+                    transition: 'width 0.3s ease'
+                  }}></div>
+                </div>
+                <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 'bold' }}>
+                  系統正在自動依序轉譯並打包，請勿關閉本頁面...
+                </span>
+              </div>
+            </div>
+          )}
+
+          
+          {/* 全域刪除確認視窗 */}
           {deleteConfirm.show && (
             <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(5px)', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <div style={{ background: '#ffffff', padding: '40px', borderRadius: '28px', width: '380px', textAlign: 'center', boxShadow: '0 30px 60px rgba(0,0,0,0.15)' }}>
