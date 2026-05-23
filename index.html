@@ -128,7 +128,6 @@
     const defaultClientState = {
       clientName: "新客戶",
       reportTitle: "115 年度 投資配息與再投入績效追蹤",
-      fontScales: { global: 1, header: 1, kpi: 1, chart: 1, table: 1, events: 1 },
       accounts: [
         { id: 'A1', name: '', acc: '', policyDate: '', invest: 0, units: 0, currency: 'TWD' },
         { id: 'A2', name: '', acc: '', policyDate: '', invest: 0, units: 0, currency: 'TWD' }
@@ -149,7 +148,7 @@
     };
 
     function App() {
-      const [activeTab, setActiveTab] = useState('data'); 
+      const [activeTab, setActiveTab] = useState('dashboard'); 
       const [isSaving, setIsSaving] = useState(false);
       const [savedImage, setSavedImage] = useState(null);
       const [deleteConfirm, setDeleteConfirm] = useState({ show: false, id: null, type: '' });
@@ -169,12 +168,27 @@
       const [batchSavedImages, setBatchSavedImages] = useState([]); 
       const [originalClientIdBeforeBatch, setOriginalClientIdBeforeBatch] = useState(null); 
 
+      // 載入客戶資料
       const [clients, setClients] = useState(() => {
         try { const local = localStorage.getItem('investment_crm_clients_v3'); if (local) return JSON.parse(local); } catch (e) {}
         return [{ id: `C${Date.now()}`, ...defaultClientState }];
       });
       const [activeClientId, setActiveClientId] = useState(clients[0]?.id);
       useEffect(() => { localStorage.setItem('investment_crm_clients_v3', JSON.stringify(clients)); }, [clients]);
+
+      // 全域字體縮放設定狀態 (跨客戶共享，修改一次，套用至所有客戶)
+      const [globalFontScales, setGlobalFontScales] = useState(() => {
+        try {
+          const local = localStorage.getItem('investment_global_font_scales_v1');
+          if (local) return JSON.parse(local);
+        } catch (e) {}
+        // 預設縮放值：整體 1.25x (125%)
+        return { global: 1.25, header: 1, kpi: 1, chart: 1, table: 1, events: 1 };
+      });
+
+      useEffect(() => {
+        localStorage.setItem('investment_global_font_scales_v1', JSON.stringify(globalFontScales));
+      }, [globalFontScales]);
 
       // 快速批次配息更新文字區狀態與解析後預覽行
       const [batchDividendInput, setBatchDividendInput] = useState('');
@@ -232,16 +246,16 @@
       const getTitle = (key, defaultStr) => activeClient.dashboardTitles?.[key] !== undefined ? activeClient.dashboardTitles[key] : defaultStr;
       const updateTitle = (key, val) => setClients(prev => prev.map(c => c.id === activeClientId ? { ...c, dashboardTitles: { ...(c.dashboardTitles || {}), [key]: val } } : c));
 
+      // 直接使用全域的字體縮放設定
+      const fontScales = globalFontScales;
+
       const updateScale = (key, delta) => {
-        setClients(prev => prev.map(c => {
-          if (c.id !== activeClientId) return c;
-          const currentScales = c.fontScales || { global: 1, header: 1, kpi: 1, chart: 1, table: 1, events: 1 };
-          const newVal = Math.min(3, Math.max(0.4, (currentScales[key] || 1) + delta));
-          return { ...c, fontScales: { ...currentScales, [key]: newVal } };
-        }));
+        setGlobalFontScales(prev => {
+          const newVal = Math.min(3, Math.max(0.4, (prev[key] || 1) + delta));
+          return { ...prev, [key]: parseFloat(newVal.toFixed(2)) };
+        });
       };
 
-      const fontScales = activeClient.fontScales || { global: 1, header: 1, kpi: 1, chart: 1, table: 1, events: 1 };
       const sGlobal = fontScales.global || 1;
       const sHeader = sGlobal * (fontScales.header || 1);
       const sKpi    = sGlobal * (fontScales.kpi || 1);
@@ -435,16 +449,28 @@
         reader.readAsDataURL(file);
       };
 
-      const findBestGlobalMatch = (policyNoInput, fundInput) => {
+      const findBestGlobalMatch = (policyNoInput, clientNameInput, fundInput) => {
         let bestMatch = null;
         let highestScore = 0;
 
         const cleanPolicyInput = String(policyNoInput || '').trim();
+        const cleanClientNameInput = String(clientNameInput || '').trim();
         const cleanFundInput = String(fundInput || '').trim();
 
         clients.forEach(client => {
+          // 評估客戶姓名相符度 (提高權重)
+          const dbClientName = String(client.clientName || '').trim();
+          let clientScore = 0;
+          if (dbClientName && cleanClientNameInput) {
+            if (dbClientName === cleanClientNameInput) {
+              clientScore += 50;
+            } else if (dbClientName.includes(cleanClientNameInput) || cleanClientNameInput.includes(dbClientName)) {
+              clientScore += 25;
+            }
+          }
+
           client.accounts.forEach(acc => {
-            let score = 0;
+            let score = clientScore;
             const dbAcc = String(acc.acc || '').trim();
             const dbName = String(acc.name || '').trim();
 
@@ -464,7 +490,7 @@
               }
             }
 
-            if (score > highestScore && score >= 25) {
+            if (score > highestScore && score >= 20) {
               highestScore = score;
               bestMatch = {
                 clientId: client.id,
@@ -486,41 +512,63 @@
           return;
         }
 
+        // 收集目前系統資料庫內所有已登記的保單號碼 (去空白，過濾空值)
+        const registeredPolicies = clients.flatMap(c => 
+          (c.accounts || []).map(a => String(a.acc || '').trim())
+        ).filter(Boolean);
+
         const lines = text.split('\n');
+        let hasUnregisteredPolicy = false;
+        let unregisteredNumbers = [];
+
         const rows = lines.map((line, idx) => {
           const cleanLine = line.trim();
           if (!cleanLine) return null;
 
           const parts = cleanLine.split(/[,，\t|/]+/).map(p => p.trim());
           
-          if (parts.length < 5) {
+          if (parts.length < 7) {
             return {
               lineIndex: idx + 1,
               rawText: cleanLine,
               status: 'error',
-              message: '格式欄位不足（至少需包含：保單號碼, 基金標的, 月份, 配息金額, 給付方式）',
-              match: null,
+              message: '格式欄位不足（需包含：保單號碼, 客戶姓名, 基金標的, 最新基準日單位數, 月份, 配息金額, 給付方式）',
+              selectedClientId: '',
+              selectedAccountId: '',
+              units: 0,
               dividends: []
             };
           }
 
           const policyNoInput = parts[0];
-          const fundInput = parts[1];
+          const clientNameInput = parts[1];
+          const fundInput = parts[2];
+          const unitsInput = parseFloat(parts[3]) || 0;
 
-          const match = findBestGlobalMatch(policyNoInput, fundInput);
-          if (!match) {
+          // 核心防護校驗：確認保單號碼是否存在於現有資料庫中
+          const isPolicyExists = registeredPolicies.includes(String(policyNoInput).trim());
+
+          if (!isPolicyExists) {
+            hasUnregisteredPolicy = true;
+            if (!unregisteredNumbers.includes(policyNoInput)) {
+              unregisteredNumbers.push(policyNoInput);
+            }
             return {
               lineIndex: idx + 1,
               rawText: cleanLine,
-              status: 'warning',
-              message: `系統查無此保單 [${policyNoInput}] 或基金標的 [${fundInput}] 相似資料`,
-              match: null,
+              status: 'error',
+              message: `❌ 錯誤：保單號碼 [${policyNoInput}] 不存在於系統中！資料已被鎖定，無法進行批次更新。`,
+              selectedClientId: '',
+              selectedAccountId: '',
+              units: unitsInput,
               dividends: []
             };
           }
 
+          const match = findBestGlobalMatch(policyNoInput, clientNameInput, fundInput);
+
           const dividends = [];
-          for (let i = 2; i < parts.length; i += 3) {
+          for (let i = 4; i < parts.length; i += 3) {
             const mInput = parts[i];
             const aInput = parts[i+1];
             const tInput = parts[i+2] || '現金給付';
@@ -530,7 +578,12 @@
               const amount = parseChineseAmount(aInput);
               const type = (tInput.includes('單位') || tInput.includes('累積') || tInput.includes('再投入')) ? '累積單位數' : '現金給付';
               
-              dividends.push({ month, amount, type });
+              dividends.push({
+                id: Date.now() + Math.random().toString(36).substr(2, 5),
+                month,
+                amount,
+                type
+              });
             }
           }
 
@@ -539,8 +592,10 @@
               lineIndex: idx + 1,
               rawText: cleanLine,
               status: 'error',
-              message: '配息明細資訊解析失敗（月份或金額格式錯誤）',
-              match,
+              message: '配息月份與金額解析失敗，請確認最後配息三項欄位是否填寫正確',
+              selectedClientId: match ? match.clientId : '',
+              selectedAccountId: match ? match.accountId : '',
+              units: unitsInput,
               dividends: []
             };
           }
@@ -548,38 +603,65 @@
           return {
             lineIndex: idx + 1,
             rawText: cleanLine,
-            status: 'success',
-            message: `成功媒合！預計更新：${match.clientName} ➜ ${dividends.map(d => `${d.month}:${d.amount.toLocaleString()}元(${d.type === '累積單位數' ? '單位' : '現金'})`).join('、')}`,
-            match,
+            status: match ? 'success' : 'warning',
+            message: match 
+              ? `智慧媒合成功：${match.clientName} 的保單 [${match.policyNo}]`
+              : `查無此保單或客戶，請利用右側面板手動對應連結`,
+            selectedClientId: match ? match.clientId : '',
+            selectedAccountId: match ? match.accountId : '',
+            units: unitsInput,
             dividends
           };
         }).filter(Boolean);
 
         setParsedBatchUpdateRows(rows);
-        const successCount = rows.filter(r => r.status === 'success').length;
-        if (successCount > 0) {
-          showToast(`🔍 成功智慧解析 ${successCount} 筆保單更新資訊，請於右側面板進行核對！`, 'success');
+
+        if (hasUnregisteredPolicy) {
+          showToast(`❌ 警告：保單 [${unregisteredNumbers.join(', ')}] 不存在於資料庫中，已全面阻斷更新！`, 'error');
         } else {
-          showToast('⚠️ 解析完畢，但未能成功媒合任何保單，請核對保單號碼。', 'error');
+          const successCount = rows.filter(r => r.status === 'success').length;
+          const totalCount = rows.length;
+          if (successCount === totalCount) {
+            showToast(`🔍 智慧解析 ${successCount} 筆保單更新資訊，已全部完美匹配！`, 'success');
+          } else {
+            showToast(`⚠️ 解析完畢（共 ${totalCount} 筆），其中 ${totalCount - successCount} 筆保單需要您於右側手動修正對應關係。`, 'warning');
+          }
         }
       };
 
       const handleApplyBatchDividendUpdates = () => {
-        const successRows = parsedBatchUpdateRows.filter(r => r.status === 'success');
-        if (successRows.length === 0) {
-          showToast('目前沒有可供更新的成功核對資料！', 'error');
+        // 二次保險防線：檢查解析結果是否依然包含錯誤保單
+        const hasCriticalError = parsedBatchUpdateRows.some(r => r.status === 'error');
+        if (hasCriticalError) {
+          showToast('❌ 無法更新！名單中包含錯誤或不存在的保單資料，請先修正或刪除錯誤卡片。', 'error');
+          return;
+        }
+
+        const validRows = parsedBatchUpdateRows.filter(r => r.selectedClientId && r.selectedAccountId);
+        if (validRows.length === 0) {
+          showToast('目前沒有可供更新的成功匹配或手動對應資料！', 'error');
           return;
         }
 
         setClients(prevClients => {
           return prevClients.map(client => {
-            const updatesForClient = successRows.filter(r => r.match.clientId === client.id);
+            const updatesForClient = validRows.filter(r => r.selectedClientId === client.id);
             if (updatesForClient.length === 0) return client;
 
+            // 1. 更新指定帳戶的「最新基準日單位數」
+            const updatedAccounts = client.accounts.map(acc => {
+              const accUpdate = updatesForClient.find(r => r.selectedAccountId === acc.id);
+              if (accUpdate) {
+                return { ...acc, units: accUpdate.units };
+              }
+              return acc;
+            });
+
+            // 2. 更新每月撥回配息數據
             let updatedMonthlyData = [...client.rawMonthlyData];
 
             updatesForClient.forEach(row => {
-              const accountId = row.match.accountId;
+              const accountId = row.selectedAccountId;
               row.dividends.forEach(div => {
                 const monthIdx = updatedMonthlyData.findIndex(m => m.month === div.month);
                 if (monthIdx !== -1) {
@@ -594,14 +676,96 @@
 
             return {
               ...client,
+              accounts: updatedAccounts,
               rawMonthlyData: updatedMonthlyData
             };
           });
         });
 
-        showToast(`🎉 成功一次更新 ${successRows.length} 筆保單的多月份撥回配息數據！`, 'success');
+        showToast(`🎉 成功更新 ${validRows.length} 筆保單之最新單位數及月配息數據！`, 'success');
         setBatchDividendInput('');
         setParsedBatchUpdateRows([]);
+      };
+
+      // 批量編輯面板的狀態變更處理函式
+      const handleRowClientChange = (lineIndex, clientId) => {
+        setParsedBatchUpdateRows(prev => prev.map(row => {
+          if (row.lineIndex !== lineIndex) return row;
+          const targetClient = clients.find(c => c.id === clientId);
+          const firstAccount = targetClient?.accounts?.[0]?.id || '';
+          return {
+            ...row,
+            selectedClientId: clientId,
+            selectedAccountId: firstAccount,
+            status: clientId && firstAccount ? 'success' : 'warning',
+            message: clientId && firstAccount 
+              ? `手動指定：${targetClient.clientName}` 
+              : '請選擇對應的保單 / 基金標的'
+          };
+        }));
+      };
+
+      const handleRowAccountChange = (lineIndex, accountId) => {
+        setParsedBatchUpdateRows(prev => prev.map(row => {
+          if (row.lineIndex !== lineIndex) return row;
+          const targetClient = clients.find(c => c.id === row.selectedClientId);
+          const targetAcc = targetClient?.accounts?.find(a => a.id === accountId);
+          return {
+            ...row,
+            selectedAccountId: accountId,
+            status: row.selectedClientId && accountId ? 'success' : 'warning',
+            message: row.selectedClientId && accountId 
+              ? `手動指定：${targetClient.clientName} [${targetAcc?.acc || '未命名保單'}]` 
+              : '請選擇對應的保單 / 基金標的'
+          };
+        }));
+      };
+
+      const handleRowUnitsChange = (lineIndex, value) => {
+        setParsedBatchUpdateRows(prev => prev.map(row => {
+          if (row.lineIndex !== lineIndex) return row;
+          return { ...row, units: parseFloat(value) || 0 };
+        }));
+      };
+
+      const handleRowDividendChange = (lineIndex, divId, field, value) => {
+        setParsedBatchUpdateRows(prev => prev.map(row => {
+          if (row.lineIndex !== lineIndex) return row;
+          const updatedDividends = row.dividends.map(div => {
+            if (div.id !== divId) return div;
+            return { ...div, [field]: field === 'amount' ? (parseFloat(value) || 0) : value };
+          });
+          return { ...row, dividends: updatedDividends };
+        }));
+      };
+
+      const handleDeleteRowDividend = (lineIndex, divId) => {
+        setParsedBatchUpdateRows(prev => prev.map(row => {
+          if (row.lineIndex !== lineIndex) return row;
+          return { ...row, dividends: row.dividends.filter(d => d.id !== divId) };
+        }));
+      };
+
+      const handleAddRowDividend = (lineIndex) => {
+        setParsedBatchUpdateRows(prev => prev.map(row => {
+          if (row.lineIndex !== lineIndex) return row;
+          return {
+            ...row,
+            dividends: [
+              ...row.dividends,
+              {
+                id: Date.now() + Math.random().toString(36).substr(2, 5),
+                month: '1月',
+                amount: 0,
+                type: '現金給付'
+              }
+            ]
+          };
+        }));
+      };
+
+      const handleDeleteRow = (lineIndex) => {
+        setParsedBatchUpdateRows(prev => prev.filter(row => row.lineIndex !== lineIndex));
       };
 
       const handleQuickCreateSubmit = () => {
@@ -705,7 +869,6 @@
             id: `C${Date.now()}_${cIdx}_${Math.random().toString(36).substr(2, 5)}`,
             clientName: name,
             reportTitle: "115 年度 投資配息與再投入績效追蹤",
-            fontScales: { global: 1, header: 1, kpi: 1, chart: 1, table: 1, events: 1 },
             accounts: accountsList,
             theme: {
               accountColors: accountColors,
@@ -817,7 +980,6 @@
               const target = clonedDoc.querySelector('[ref="reportRef"]') || clonedDoc.body;
               target.classList.add('html2canvas-container');
               
-              // 1. 去除所有 cloned editable 的 Outline 浮動影響
               clonedDoc.querySelectorAll('[contenteditable]').forEach(el => {
                 el.removeAttribute('contenteditable');
                 el.style.outline = 'none';
@@ -827,7 +989,6 @@
                 el.style.textShadow = 'none';
               });
 
-              // 2. 移除所有 backdrop-filter 層，替換成安全背景，避免 html2canvas 產生漂移框與坐標重繪錯誤
               clonedDoc.querySelectorAll('*').forEach(el => {
                 const computedStyle = window.getComputedStyle(el);
                 if (el.style.backdropFilter || computedStyle.backdropFilter !== 'none') {
@@ -841,7 +1002,6 @@
                 }
               });
 
-              // 3. 專屬防護：強制將客戶姓名框框之 backdrop-filter 與 position 重設，使其絕不跑位
               const clientNameBox = clonedDoc.querySelector('.report-client-name-container');
               if (clientNameBox) {
                 clientNameBox.style.backdropFilter = 'none';
@@ -1017,6 +1177,7 @@
             if (data.clients) { setClients(data.clients); setActiveClientId(data.clients[0]?.id); }
             if (data.products) setProducts(data.products);
             if (data.savedThemes) setSavedThemes(data.savedThemes);
+            if (data.globalFontScales) setGlobalFontScales(data.globalFontScales);
             showToast('✅ 資料還原成功！', 'success');
           } catch (err) {
             showToast('❌ 檔案格式錯誤，請確認您上傳的是正確的 .json 備份檔！', 'error');
@@ -1030,7 +1191,8 @@
           exportDate: new Date().toLocaleString('zh-TW'),
           clients: clients,
           products: products,
-          savedThemes: savedThemes
+          savedThemes: savedThemes,
+          globalFontScales: globalFontScales
         };
         const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
@@ -1203,7 +1365,7 @@
 
           {/* ==================================================== 📦 商品庫與備份分頁 ==================================================== */}
           {activeTab === 'products' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', width: '100%', maxWidth: '1240px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', width: '100%', maxWidth: '1400px' }}>
               
               {/* 🤖 貼上更新區塊 */}
               <div className="glass-card" style={{ padding: '32px', background: 'linear-gradient(135deg, #f8fafc 0%, #f5f3ff 100%)', border: '1px solid #ddd6fe', boxShadow: '0 10px 25px rgba(139,92,246,0.05)' }}>
@@ -1212,115 +1374,261 @@
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                       <span style={{ fontSize: '32px' }}>⚡</span>
                       <div>
-                        <h2 style={{ margin: 0, fontSize: '22px', color: '#0f172a', fontWeight: '900' }}>快速批次更新配息資訊中心</h2>
+                        <h2 style={{ margin: 0, fontSize: '22px', color: '#0f172a', fontWeight: '900' }}>快速批次更新配息與單位數中心</h2>
                         <p style={{ fontSize: '14px', color: '#64748b', margin: '4px 0 0 0', lineHeight: '1.6' }}>
-                          在此快速匯入與更新多筆保單配息！支援「單筆月配息（情況一）」與「同一保單更新多月份配息（情況二）」。
+                          在此快速批次更新全體客戶的最新單位數與每月撥回配息！支援「單月份更新（情況一）」與「同一標的多月份配息同時更新（情況二）」。
                         </p>
                       </div>
                     </div>
                   </div>
 
-                  {}
                   {/* 格式引導範例卡片 */}
                   <div className="bg-white p-4 rounded-xl border border-slate-200 text-xs text-slate-600 space-y-2">
                     <div className="font-bold text-slate-800 flex items-center gap-1">
-                      <span>💡</span> 支援兩種匯入情境：
+                      <span>💡</span> 全新升級：格式中新增了<b>「客戶姓名」</b>與<b>「最新單位數」</b>兩大對帳關鍵資訊！
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <span className="font-bold text-blue-600">📌 情況一 (單月配息更新)</span>
-                        <p className="mt-1">格式：<code>保單號碼 , 基金標的 , 月份 , 配息金額 , 給付方式</code></p>
+                        <span className="font-bold text-blue-600">📌 情況一 (單月對帳配息更新)</span>
+                        <p className="mt-1">格式：<code>保單號碼 , 客戶姓名 , 基金標的 , 最新基準日單位數 , 月份 , 配息金額 , 給付方式</code></p>
                       </div>
                       <div>
                         <span className="font-bold text-purple-600">📌 情況二 (同一標的，更新多月份配息)</span>
-                        <p className="mt-1">格式：<code>保單號碼 , 基金標的 , [月份1] , [金額1] , [給付方式1] , [月份2] , [金額2]...</code></p>
+                        <p className="mt-1">格式：<code>保單號碼 , 客戶姓名 , 基金標的 , 最新基準日單位數 , [月份1] , [金額1] , [給付方式1] , [月份2] , [金額2]...</code></p>
                       </div>
                     </div>
                   </div>
 
                   {/* 批次更新主操作區 */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '24px', background: 'rgba(255,255,255,0.7)', padding: '24px', borderRadius: '16px', border: '1px solid #cbd5e1', backdropFilter: 'blur(10px)' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }} className="grid grid-cols-1 lg:grid-cols-2">
                     
                     {/* 左側：多行貼入區 */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }} className="bg-white/70 p-6 rounded-2xl border border-slate-200 backdrop-blur">
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                         <label style={labelStyle}>📋 貼入多筆對帳與配息資料（支援多行輸入）</label>
                         <textarea
                           value={batchDividendInput}
                           onChange={e => setBatchDividendInput(e.target.value)}
-                          placeholder="每一行請依循逗號隔開：&#10;48885 , 環球總報酬 , 5月 , 2229 , 累積單位數&#10;33912 , 鑫穩健-A1 , 5月 , 15000 , 現金給付 , 6月 , 15000 , 現金給付..."
-                          style={{ ...inputStyle, height: '220px', resize: 'vertical', fontFamily: 'monospace', fontSize: '12px', background: '#ffffff', lineHeight: '1.6' }}
+                          placeholder="每一行請依循逗號隔開：&#10;48885 , 王小明 , 環球總報酬 , 1250.5 , 5月 , 2229 , 累積單位數&#10;33912 , 李大同 , 鑫穩健-A1 , 3500 , 5月 , 15000 , 現金給付 , 6月 , 15000 , 現金給付..."
+                          style={{ ...inputStyle, height: '300px', resize: 'vertical', fontFamily: 'monospace', fontSize: '12px', background: '#ffffff', lineHeight: '1.6' }}
                         />
                       </div>
                       
                       <button 
                         onClick={() => handleParseBatchDividendInput(batchDividendInput)} 
                         disabled={!batchDividendInput.trim()}
-                        style={{ width: '100%', background: !batchDividendInput.trim() ? '#cbd5e1' : 'linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%)', color: '#fff', border: 'none', padding: '12px', borderRadius: '10px', cursor: !batchDividendInput.trim() ? 'not-allowed' : 'pointer', fontWeight: 'bold', fontSize: '14px', boxShadow: !batchDividendInput.trim() ? 'none' : '0 4px 12px rgba(139,92,246,0.2)' }}
+                        style={{ width: '100%', background: !batchDividendInput.trim() ? '#cbd5e1' : 'linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%)', color: '#fff', border: 'none', padding: '14px', borderRadius: '12px', cursor: !batchDividendInput.trim() ? 'not-allowed' : 'pointer', fontWeight: 'bold', fontSize: '15px', boxShadow: !batchDividendInput.trim() ? 'none' : '0 4px 12px rgba(139,92,246,0.2)' }}
                       >
-                        🔍 立即智慧比對保單並解析配息
+                        🔍 立即智慧比對保單並解析配息 (最新版)
                       </button>
                     </div>
 
                     {/* 右側：解析預覽與一鍵更新確認 */}
-                    <div style={{ display: 'flex', flexDirection: 'column', border: '2px dashed #cbd5e1', borderRadius: '12px', padding: '16px', background: '#f8fafc', minHeight: '260px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #cbd5e1', paddingBottom: '10px', marginBottom: '12px' }}>
-                        <span style={{ fontSize: '13px', color: '#475569', fontWeight: 'bold' }}>📋 批次核對清單與媒合結果</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', border: '2px dashed #cbd5e1', borderRadius: '16px', padding: '20px', background: '#f8fafc', minHeight: '430px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #cbd5e1', paddingBottom: '12px', marginBottom: '16px' }}>
+                        <span style={{ fontSize: '14px', color: '#475569', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          📋 批次核對清單與手動配置修改區 (可直接編輯)
+                        </span>
                         {parsedBatchUpdateRows.length > 0 && (
-                          <span className="text-xs bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full font-bold">
-                            共 {parsedBatchUpdateRows.length} 行
+                          <span className="text-xs bg-slate-200 text-slate-700 px-3 py-1 rounded-full font-bold">
+                            共 {parsedBatchUpdateRows.length} 筆資料
                           </span>
                         )}
                       </div>
 
                       {parsedBatchUpdateRows.length > 0 ? (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', flex: 1 }}>
-                          <div className="overflow-y-auto max-h-[220px] space-y-2 pr-1">
-                            {parsedBatchUpdateRows.map((row) => (
-                              <div 
-                                key={row.lineIndex} 
-                                className={`p-3 rounded-lg border text-xs flex flex-col gap-1 ${
-                                  row.status === 'success' 
-                                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
-                                    : row.status === 'warning'
-                                    ? 'bg-amber-50 border-amber-200 text-amber-800'
-                                    : 'bg-red-50 border-red-200 text-red-800'
-                                }`}
-                              >
-                                <div className="flex justify-between items-center font-bold">
-                                  <span>第 {row.lineIndex} 行：{row.status === 'success' ? '✅ 匹配成功' : row.status === 'warning' ? '⚠️ 比對不完全' : '❌ 格式錯誤'}</span>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', flex: 1 }}>
+                          {/* 可編輯卡片容器 */}
+                          <div className="overflow-y-auto max-h-[500px] space-y-4 pr-1">
+                            {parsedBatchUpdateRows.map((row) => {
+                              const selectedClient = clients.find(c => c.id === row.selectedClientId);
+                              return (
+                                <div 
+                                  key={row.lineIndex} 
+                                  className={`p-4 rounded-xl border-2 shadow-sm flex flex-col gap-3 transition-all bg-white ${
+                                    row.status === 'success' 
+                                      ? 'border-emerald-500/80 bg-emerald-50/10' 
+                                      : row.status === 'warning'
+                                      ? 'border-amber-400/80 bg-amber-50/10'
+                                      : 'border-rose-500/80 bg-rose-50/10'
+                                  }`}
+                                >
+                                  {/* 卡片標題與刪除行按鈕 */}
+                                  <div className="flex justify-between items-center pb-2 border-b border-dashed border-slate-200">
+                                    <span className="text-xs font-bold text-slate-700">
+                                      第 {row.lineIndex} 行原始資訊：
+                                    </span>
+                                    <button 
+                                      onClick={() => handleDeleteRow(row.lineIndex)}
+                                      className="text-xs text-rose-600 hover:text-rose-800 font-bold px-2 py-1 rounded hover:bg-rose-50 transition"
+                                      title="不匯入此行"
+                                    >
+                                      🗑️ 移除此行
+                                    </button>
+                                  </div>
+
+                                  <div className="text-[10px] text-slate-400 font-mono truncate italic bg-slate-50 p-1.5 rounded">
+                                    「{row.rawText}」
+                                  </div>
+
+                                  {/* 警告/成功指示訊息 */}
+                                  <div className={`text-xs font-bold ${
+                                    row.status === 'success' ? 'text-emerald-700' : row.status === 'warning' ? 'text-amber-700' : 'text-rose-700'
+                                  }`}>
+                                    {row.status === 'success' ? '✅ ' : row.status === 'warning' ? '⚠️ ' : '❌ '} {row.message}
+                                  </div>
+
+                                  {/* 1. 客戶與帳戶/保單對應修改選單 */}
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <div>
+                                      <label className="text-[11px] font-bold text-slate-500 block mb-1">對應客戶：</label>
+                                      <select
+                                        value={row.selectedClientId}
+                                        onChange={e => handleRowClientChange(row.lineIndex, e.target.value)}
+                                        style={{ ...selectStyle, padding: '6px 8px', fontSize: '12px' }}
+                                        disabled={row.status === 'error' && row.message.includes('不存在')}
+                                      >
+                                        <option value="">-- 手動指定客戶 --</option>
+                                        {clients.map(c => (
+                                          <option key={c.id} value={c.id}>{c.clientName}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className="text-[11px] font-bold text-slate-500 block mb-1">對應標的保單：</label>
+                                      <select
+                                        value={row.selectedAccountId}
+                                        onChange={e => handleRowAccountChange(row.lineIndex, e.target.value)}
+                                        style={{ ...selectStyle, padding: '6px 8px', fontSize: '12px' }}
+                                        disabled={!row.selectedClientId || (row.status === 'error' && row.message.includes('不存在'))}
+                                      >
+                                        <option value="">-- 選擇保單/基金 --</option>
+                                        {selectedClient?.accounts?.map(acc => (
+                                          <option key={acc.id} value={acc.id}>
+                                            {acc.acc || '無保單號'} - {acc.name || '未選擇標的'}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  </div>
+
+                                  {/* 2. 修改基準日單位數 */}
+                                  <div className="bg-slate-50/50 p-2.5 rounded-lg border border-slate-200">
+                                    <div className="flex items-center gap-2">
+                                      <label className="text-xs font-bold text-slate-600 shrink-0">最新基準日單位數：</label>
+                                      <input 
+                                        type="number" 
+                                        step="any"
+                                        value={row.units} 
+                                        onChange={e => handleRowUnitsChange(row.lineIndex, e.target.value)}
+                                        style={{ ...inputStyle, padding: '4px 8px', fontSize: '12px', width: '120px' }}
+                                        disabled={row.status === 'error' && row.message.includes('不存在')}
+                                      />
+                                    </div>
+                                  </div>
+
+                                  {/* 3. 修改每月撥回配息明細 */}
+                                  <div>
+                                    <div className="flex justify-between items-center mb-1">
+                                      <span className="text-[11px] font-bold text-slate-500">配息明細修改：</span>
+                                      <button 
+                                        onClick={() => handleAddRowDividend(row.lineIndex)}
+                                        className="text-[10px] text-blue-600 hover:text-blue-800 font-bold bg-blue-50 px-2 py-0.5 rounded"
+                                        disabled={row.status === 'error' && row.message.includes('不存在')}
+                                      >
+                                        ➕ 增加月份
+                                      </button>
+                                    </div>
+
+                                    <div className="space-y-1.5">
+                                      {row.dividends.map(div => (
+                                        <div key={div.id} className="flex gap-1.5 items-center bg-slate-50 p-1.5 rounded border border-slate-100">
+                                          <input 
+                                            type="text" 
+                                            value={div.month} 
+                                            onChange={e => handleRowDividendChange(row.lineIndex, div.id, 'month', e.target.value)}
+                                            style={{ ...inputStyle, padding: '3px 6px', fontSize: '11px', width: '60px' }} 
+                                          />
+                                          <input 
+                                            type="number" 
+                                            value={div.amount} 
+                                            onChange={e => handleRowDividendChange(row.lineIndex, div.id, 'amount', e.target.value)}
+                                            style={{ ...inputStyle, padding: '3px 6px', fontSize: '11px', flex: 1 }} 
+                                            placeholder="配息金額"
+                                          />
+                                          <button
+                                            onClick={() => handleRowDividendChange(row.lineIndex, div.id, 'type', div.type === '累積單位數' ? '現金給付' : '累積單位數')}
+                                            className={`text-[10px] px-2 py-1 rounded font-bold shrink-0 transition ${
+                                              div.type === '累積單位數' 
+                                                ? 'bg-purple-100 text-purple-700 hover:bg-purple-200' 
+                                                : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                                            }`}
+                                          >
+                                            {div.type === '累積單位數' ? '📈 單位' : '💵 現金'}
+                                          </button>
+                                          <button 
+                                            onClick={() => handleDeleteRowDividend(row.lineIndex, div.id)}
+                                            className="text-red-500 hover:text-red-700 shrink-0 text-xs px-1 font-bold"
+                                            title="刪除此月"
+                                          >
+                                            ✕
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+
                                 </div>
-                                <p className="text-[10px] opacity-80 italic font-mono truncate">「{row.rawText}」</p>
-                                <p className="font-semibold text-xs mt-0.5">{row.message}</p>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
+
+                          {/* 警告與更新確認區 */}
+                          {parsedBatchUpdateRows.some(r => r.status === 'error') && (
+                            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-semibold flex items-center gap-2">
+                              <span>⚠️</span> 系統偵測到未註冊的保單，更新功能已鎖定。請修正資料庫，或移除錯誤資料卡片。
+                            </div>
+                          )}
 
                           <button 
                             onClick={handleApplyBatchDividendUpdates} 
-                            disabled={!parsedBatchUpdateRows.some(r => r.status === 'success')}
+                            disabled={
+                              parsedBatchUpdateRows.some(r => r.status === 'error') || 
+                              !parsedBatchUpdateRows.some(r => r.selectedClientId && r.selectedAccountId)
+                            }
                             style={{ 
                               width: '100%', 
                               marginTop: 'auto', 
-                              background: parsedBatchUpdateRows.some(r => r.status === 'success') ? '#059669' : '#cbd5e1', 
+                              background: (
+                                parsedBatchUpdateRows.some(r => r.status === 'error') || 
+                                !parsedBatchUpdateRows.some(r => r.selectedClientId && r.selectedAccountId)
+                              ) ? '#cbd5e1' : '#059669', 
                               color: '#fff', 
                               border: 'none', 
-                              padding: '12px', 
-                              borderRadius: '8px', 
-                              cursor: parsedBatchUpdateRows.some(r => r.status === 'success') ? 'pointer' : 'not-allowed', 
+                              padding: '14px', 
+                              borderRadius: '12px', 
+                              cursor: (
+                                parsedBatchUpdateRows.some(r => r.status === 'error') || 
+                                !parsedBatchUpdateRows.some(r => r.selectedClientId && r.selectedAccountId)
+                              ) ? 'not-allowed' : 'pointer', 
                               fontWeight: 'bold', 
-                              fontSize: '14px', 
+                              fontSize: '15px', 
                               transition: 'background 0.2s',
-                              boxShadow: parsedBatchUpdateRows.some(r => r.status === 'success') ? '0 4px 6px rgba(5,150,105,0.1)' : 'none'
+                              boxShadow: (
+                                parsedBatchUpdateRows.some(r => r.status === 'error') || 
+                                !parsedBatchUpdateRows.some(r => r.selectedClientId && r.selectedAccountId)
+                              ) ? 'none' : '0 4px 10px rgba(5,150,105,0.15)'
                             }}
                           >
-                            ✅ 確認無誤，批次寫入所有配息數據
+                            {parsedBatchUpdateRows.some(r => r.status === 'error') 
+                              ? '❌ 包含錯誤保單，鎖定更新' 
+                              : '✅ 確認核對無誤，一鍵批次寫入系統'}
                           </button>
                         </div>
                       ) : (
                         <div style={{ margin: 'auto', textAlign: 'center', color: '#94a3b8' }}>
                           <span style={{ fontSize: '32px' }}>📋</span>
-                          <p style={{ margin: '8px 0 0 0', fontSize: '13px', fontWeight: 'bold' }}>尚未進行配息解析</p>
+                          <p style={{ margin: '8px 0 0 0', fontSize: '13px', fontWeight: 'bold' }}>尚無對帳單解析</p>
                           <span style={{ fontSize: '11px', color: '#cbd5e1' }}>請在左側輸入欲批次更新的保單資料，並點擊比對解析</span>
                         </div>
                       )}
@@ -1330,7 +1638,7 @@
                 </div>
               </div>
 
-              {}
+              {/* 💾 系統資料備份與還原 (Checkpoint) */}
               <div className="glass-card" style={{ padding: '32px', background: 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)', border: '2px dashed #cbd5e1' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
                   <div>
@@ -1385,6 +1693,7 @@
           {activeTab === 'data' && (
             <div className="glass-card" style={{ padding: '32px', width: '100%', maxWidth: '1240px', marginTop: '24px' }}>
               
+              {}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', borderBottom: '2px solid #f1f5f9', paddingBottom: '24px', marginBottom: '32px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
                   <h2 style={{ margin: 0, fontSize: '24px', color: '#0f172a', fontWeight: '900' }}>📝 {clientName} 的數據編輯中心</h2>
@@ -1410,7 +1719,7 @@
                       )}
                       
                       <div style={{ marginBottom: '20px', paddingRight: '24px' }}>
-                        <label style={{ ...labelStyle, color: theme.accountColors[acc.id] }}>保單號碼與投投日期</label>
+                        <label style={{ ...labelStyle, color: theme.accountColors[acc.id] }}>保單號碼與投保日期</label>
                         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                           <input value={acc.acc} onChange={e => handleAccountChange(acc.id, 'acc', e.target.value)} style={{ ...inputStyle, flex: '1 1 130px' }} placeholder="保單號碼" />
                           <input type="text" value={acc.policyDate || ''} onChange={e => handleAccountChange(acc.id, 'policyDate', e.target.value)} style={{ ...inputStyle, flex: '1 1 130px' }} placeholder="投保日 (例: 115/05/11)" />
@@ -1436,7 +1745,7 @@
                       </div>
 
                       <div style={{ marginBottom: '20px' }}>
-                        <label style={labelStyle}>初始投入 / 單位數</label>
+                        <label style={labelStyle}>投入金額 / 單位數</label>
                         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                           <div style={{ flex: '1 1 140px', display: 'flex', background: '#f8fafc', borderRadius: '8px', overflow: 'hidden', border: '1px solid #cbd5e1', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.02)' }}>
                             <select value={acc.currency || 'TWD'} onChange={e => handleAccountChange(acc.id, 'currency', e.target.value)} style={{ background: '#e2e8f0', color: '#0369a1', border: 'none', padding: '0 10px', outline: 'none', cursor: 'pointer', fontWeight: '800', fontSize: '13px' }}>
@@ -1457,11 +1766,11 @@
                 </div>
               </div>
 
+              {}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                 <h3 style={{ margin: 0, color: '#0f172a', fontSize: '18px', fontWeight: '800' }}>📅 每月撥回金額明細</h3>
               </div>
 
-              {}
               <div style={{ overflowX: 'auto', marginBottom: '24px', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 4px 15px rgba(0,0,0,0.02)' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: `${450 + accounts.length * 220}px`, background: '#ffffff' }}>
                   <thead>
@@ -1534,6 +1843,7 @@
           {/* ==================================================== 📊 儀表板分頁 ==================================================== */}
           {activeTab === 'dashboard' && (
             <>
+              {}
               {/* 控制面板 */}
               <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px 28px', border: '1px solid #ffffff', width: '100%', maxWidth: '1400px', marginTop: '24px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '20px' }}>
@@ -1617,7 +1927,8 @@
                   </div>
                 </div>
                 
-                {/* 字體縮放控制中心 */}
+                {}
+                {/* 字體縮放控制中心 (已改為全域狀態管理，切換客戶時自動保留比例) */}
                 <div style={{ width: '100%', borderTop: '2px dashed #f1f5f9', paddingTop: '16px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
                   <span style={{ color: '#64748b', fontSize: '14px', whiteSpace: 'nowrap', fontWeight: '800' }}>🔠 字體縮放控制：</span>
                   <ScaleControl label="整體" scaleKey="global" />
@@ -1640,10 +1951,10 @@
                 )}
               </div>
 
-              {}
               {/* --- 報表渲染外層 --- */}
               <div style={{ width: '100%', overflowX: 'auto', borderRadius: '28px', boxShadow: '0 30px 60px rgba(0,0,0,0.08)', WebkitOverflowScrolling: 'touch', background: '#ffffff', border: '1px solid rgba(255,255,255,0.8)', marginTop: '24px' }}>
                 
+                {}
                 {/* 報表本體容器 */}
                 <div ref={reportRef} style={{ 
                   width: '100%', 
@@ -1668,17 +1979,13 @@
                     </div>
                    <div style={{ textAlign: 'right' }}>
 
-  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '12px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '12px' }}>
+                      <div style={{ fontSize: 45 * sHeader, color: '#1e293b', fontWeight: 800 }}>
+                        <EditableTitle value={clientName} onSave={setClientName} hoverBorder={`1px dashed #1e293b`} />
+                      </div>
+                    </div>
 
-    <div style={{ fontSize: 45 * sHeader, color: '#1e293b', fontWeight: 800 }}>
-
-      <EditableTitle value={clientName} onSave={setClientName} hoverBorder={`1px dashed #1e293b`} />
-
-    </div>
-
-  </div>
-
-</div>
+                  </div>
                   </div>
 
                   {/* 🏆 KPI 區塊 */}
@@ -1708,9 +2015,27 @@
                         <div style={{ fontSize: 20 * sKpi, color: 'rgba(255,255,255,0.85)', letterSpacing: '2px', marginBottom: '12px', fontWeight: '800', width: '100%', textAlign: 'center' }}>
                           <EditableTitle value={getTitle('kpi_cash', `累積已領`)} onSave={v => updateTitle('kpi_cash', v)} hoverBorder="1px dashed rgba(255,255,255,0.6)" style={{ textAlign: 'center' }} />
                         </div>
-                        <div style={{ fontSize: 42 * sKpi, fontWeight: 800, textShadow: '0 2px 8px rgba(0,0,0,0.15)', width: '100%', textAlign: 'center' }}>
-                          <Counter target={totalCash} prefix={`${globalSym} `} />
-                        </div>
+                         <div style={{ width: '100%', textAlign: 'center', fontWeight: 900, textShadow: '0 4px 12px rgba(0,0,0,0.2)' }}>
+
+                          {/* 上行：貨幣符號（字體稍微小一點，才不會跟數字一樣大，比較美觀） */}
+
+                            <div style={{ fontSize: 42 * sKpi, marginBottom: 8 }}>
+
+                              {globalSym}
+
+                            </div>
+
+                            
+
+                            {/* 下行：動態跳動的數字 */}
+
+                            <div style={{ fontSize: 42 * sKpi }}>
+
+                              <Counter target={totalCash} />
+
+                            </div>
+
+                          </div>
                         <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'center', alignItems: 'center', width: '100%', textAlign: 'center' }}>
                           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.85, display: 'inline-block' }}>
                             <line x1="12" y1="1" x2="12" y2="23"></line>
@@ -1737,9 +2062,32 @@
                         <div style={{ fontSize: 20 * sKpi, color: 'rgba(255,255,255,0.85)', letterSpacing: '2px', marginBottom: '12px', fontWeight: '800', width: '100%', textAlign: 'center' }}>
                           <EditableTitle value={getTitle('kpi_units', `累積單位數總額`)} onSave={v => updateTitle('kpi_units', v)} hoverBorder="1px dashed rgba(255,255,255,0.6)" style={{ textAlign: 'center' }} />
                         </div>
-                        <div style={{ fontSize: 42 * sKpi, fontWeight: 900, textShadow: '0 2px 8px rgba(0,0,0,0.15)', width: '100%', textAlign: 'center' }}>
-                          <Counter target={totalUnits} prefix={`${globalSym} `} />
-                        </div>
+                        
+                        <div style={{ width: '100%', textAlign: 'center', fontWeight: 900, textShadow: '0 4px 12px rgba(0,0,0,0.2)' }}>
+
+
+
+                          {/* 上行：貨幣符號（字體稍微小一點，才不會跟數字一樣大，比較美觀） */}
+
+
+
+                            <div style={{ fontSize: 42 * sKpi, marginBottom: 8 }}>
+
+                              {globalSym}
+
+                            </div>
+                          
+
+                            {/* 下行：動態跳動的數字 */}
+
+                            <div style={{ fontSize: 42 * sKpi }}>
+
+                              <Counter target={totalUnits} />
+
+                           </div>
+
+                          </div>
+                       
                         <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'center', alignItems: 'center', width: '100%', textAlign: 'center' }}>
                           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.85, display: 'inline-block' }}>
                             <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
@@ -1766,9 +2114,32 @@
                         <div style={{ fontSize: 20 * sKpi, color: 'rgba(255,255,255,0.9)', letterSpacing: '2px', marginBottom: '12px', fontWeight: '800', width: '100%', textAlign: 'center' }}>
                           <EditableTitle value={getTitle('kpi_total', `合計`)} onSave={v => updateTitle('kpi_total', v)} hoverBorder="1px dashed rgba(255,255,255,0.6)" style={{ textAlign: 'center' }} />
                         </div>
-                        <div style={{ fontSize: 42 * sKpi, fontWeight: 900, textShadow: '0 4px 12px rgba(0,0,0,0.2)', width: '100%', textAlign: 'center' }}>
-                          <Counter target={finalTotal} prefix={`${globalSym} `} />
-                        </div>
+                       
+                          <div style={{ width: '100%', textAlign: 'center', fontWeight: 900, textShadow: '0 4px 12px rgba(0,0,0,0.2)' }}>
+
+
+
+                          {/* 上行：貨幣符號（字體稍微小一點，才不會跟數字一樣大，比較美觀） */}
+
+
+
+                            <div style={{ fontSize: 42 * sKpi, marginBottom: 8 }}>
+
+                             {globalSym}
+
+                            </div>
+                          
+
+                            {/* 下行：動態跳動的數字 */}
+
+                            <div style={{ fontSize: 42 * sKpi }}>
+                              <Counter target={finalTotal} />
+
+                            </div>
+
+                          </div>
+
+
                         <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'center', alignItems: 'center', width: '100%', textAlign: 'center' }}>
                           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.9, display: 'inline-block' }}>
                             <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path>
@@ -1778,7 +2149,6 @@
                     </div>
                   </div> 
 
-                  {}
                   {/* 下方資料視圖與明細圖表 */}
                   <div style={{ display: 'grid', flexDirection: 'column', gap: '24px' }}>
                     
@@ -1799,6 +2169,7 @@
                           </div>
                         </div>
                         
+                        {}
                         {/* 趨勢累積柱狀、折線圖 */}
                         <div style={{ height: '360px', width: '100%', marginBottom: '24px' }}>
                           <ResponsiveContainer width="100%" height="100%">
@@ -1863,7 +2234,7 @@
                                         </td>
                                       )}
                                       <td style={{ padding: '12px', fontWeight: '900', color: group.color, background: bgImage ? 'rgba(255,255,255,0.1)' : '#ffffff', borderRight: '1px solid #f1f5f9' }}>
-                                        {acc.name || '未選擇標對'}
+                                        {acc.name || '未選擇標的'}
                                       </td>
                                       {monthlyData.map((d, i) => (
                                         <td key={i} style={{ padding: '12px', color: '#475569', fontWeight: 'bold' }}>
@@ -1908,7 +2279,7 @@
                                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>基金標的 <ScaleButtons scaleKey="name" /></div>
                                 </th>
                                 <th style={{ padding: '16px 0', borderBottom: '2px solid #e2e8f0' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>目前單位數 <ScaleButtons scaleKey="unit" /></div>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>基準日單位數 <ScaleButtons scaleKey="unit" /></div>
                                 </th>
                                 <th style={{ textAlign: 'right', padding: '16px 20px', borderBottom: '2px solid #e2e8f0' }}>
                                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>總投入 <ScaleButtons scaleKey="invest" /></div>
@@ -2011,6 +2382,7 @@
                   </div>
                 </div>
 
+                {}
                 {/* 彈窗內容區 */}
                 <div style={{ padding: '24px', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   
@@ -2070,6 +2442,7 @@
             </div>
           )}
 
+          {}
           {/* 💡 批量打包下載全體客戶進度條 Overlay */}
           {batchIndex !== -1 && (
             <div style={{
