@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>基金配息報表工作台 index2</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <style>
+    :root {
+      --ink: #111827;
+      --muted: #64748b;
+      --line: #dbe6f3;
+      --blue: #2563eb;
+      --green: #059669;
+      --amber: #d97706;
+      --rose: #e11d48;
+      --paper: #ffffff;
+      --soft: #f6f8fb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Noto Sans TC", "Microsoft JhengHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #eef3f8;
+      color: var(--ink);
+    }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    .app-shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+    }
+    .side {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      background: #0f172a;
+      color: #e5e7eb;
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid rgba(255,255,255,.1);
+    }
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #38bdf8, #2563eb 55%, #0f766e);
+      font-weight: 900;
+    }
+    .nav-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 0;
+      border-radius: 8px;
+      padding: 12px 14px;
+      background: transparent;
+      color: #cbd5e1;
+      font-weight: 800;
+      text-align: left;
+    }
+    .nav-btn.active, .nav-btn:hover { background: rgba(255,255,255,.09); color: #fff; }
+    .main { padding: 24px; min-width: 0; }
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: 0 10px 25px rgba(15,23,42,.04);
+    }
+    .panel-pad { padding: 18px; }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-weight: 900;
+      background: #e2e8f0;
+      color: #1f2937;
+    }
+    .btn.primary { background: var(--blue); color: #fff; }
+    .btn.green { background: var(--green); color: #fff; }
+    .btn.rose { background: #ffe4e6; color: var(--rose); }
+    .btn.ghost { background: #f8fafc; color: #334155; border: 1px solid var(--line); }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .field {
+      width: 100%;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #fff;
+      outline: none;
+    }
+    .field:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+    .muted { color: var(--muted); }
+    .grid-kpi {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .kpi {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px;
+    }
+    .kpi .label { color: var(--muted); font-size: 12px; font-weight: 900; }
+    .kpi .value { font-size: 24px; font-weight: 950; margin-top: 4px; }
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(360px, .95fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .report-card {
+      background: #fff;
+      color: #111827;
+      width: 1120px;
+      min-height: 760px;
+      padding: 38px;
+      border-radius: 0;
+      box-shadow: none;
+    }
+    .report-card.screen { width: 100%; min-height: auto; border-radius: 10px; box-shadow: 0 10px 25px rgba(15,23,42,.05); }
+    .report-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      border-bottom: 4px solid #0f172a;
+      padding-bottom: 18px;
+      margin-bottom: 18px;
+    }
+    .report-title { font-size: 30px; font-weight: 950; line-height: 1.2; }
+    .client-name { font-size: 34px; font-weight: 950; color: #0f172a; }
+    .summary-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin: 18px 0;
+    }
+    .summary-box {
+      border: 1px solid #dbe6f3;
+      padding: 14px;
+      border-radius: 8px;
+      background: #f8fafc;
+    }
+    .mini-label { font-size: 12px; color: #64748b; font-weight: 900; }
+    .mini-value { font-size: 22px; font-weight: 950; margin-top: 5px; }
+    .bars { display: grid; gap: 8px; }
+    .bar-line {
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr) 90px;
+      gap: 10px;
+      align-items: center;
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .bar-track { height: 14px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 999px; background: #2563eb; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #e2e8f0; padding: 9px 10px; text-align: left; }
+    th { background: #f8fafc; color: #475569; font-size: 12px; font-weight: 950; }
+    td { font-size: 13px; font-weight: 700; }
+    .client-list { display: grid; gap: 8px; max-height: 560px; overflow: auto; }
+    .client-item {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 8px;
+      padding: 11px;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }
+    .client-item.active { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+    .batch-row {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .batch-row summary {
+      list-style: none;
+      padding: 10px 12px;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 10px;
+      align-items: center;
+      cursor: pointer;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 950;
+    }
+    .badge.ok { background: #d1fae5; color: #047857; }
+    .badge.fix { background: #ffe4e6; color: #be123c; }
+    .badge.warn { background: #fef3c7; color: #92400e; }
+    .type-chip {
+      border: 0;
+      border-radius: 7px;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+    .type-cash { background: #dbeafe; color: #1d4ed8; }
+    .type-unit { background: #f3e8ff; color: #7e22ce; }
+    .type-transfer { background: #cffafe; color: #0e7490; }
+    .image-reference {
+      min-height: 360px;
+      border: 1px dashed #94a3b8;
+      border-radius: 10px;
+      background: #f8fafc;
+      display: grid;
+      place-items: center;
+      overflow: auto;
+    }
+    .image-reference img { max-width: 100%; display: block; }
+    .hidden-render {
+      position: fixed;
+      left: -200vw;
+      top: 0;
+      width: 1120px;
+      pointer-events: none;
+    }
+    .dirty {
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      color: #9a3412;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-weight: 900;
+      display: none;
+    }
+    .dirty.show { display: block; }
+    @media (max-width: 980px) {
+      .app-shell { grid-template-columns: 1fr; }
+      .side { position: relative; height: auto; }
+      .two-col, .grid-kpi { grid-template-columns: 1fr; }
+      .topbar { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <aside class="side">
+      <div class="brand">
+        <div class="brand-mark">配</div>
+        <div>
+          <div class="text-lg font-black">基金配息工作台</div>
+          <div class="text-xs text-slate-400 font-bold">index2 · 報表 / 批次 / 備份</div>
+        </div>
+      </div>
+      <nav class="grid gap-1">
+        <button class="nav-btn active" data-tab="dashboard">📊 報表總覽</button>
+        <button class="nav-btn" data-tab="batch">⚡ 快速更新</button>
+        <button class="nav-btn" data-tab="clients">👥 客戶資料</button>
+        <button class="nav-btn" data-tab="backup">💾 備份還原</button>
+      </nav>
+      <div class="mt-auto grid gap-2">
+        <div id="dirtyNotice" class="dirty">資料尚未備份，離開前請下載備份。</div>
+        <button id="downloadBackupSide" class="btn green">下載備份 JSON</button>
+        <button id="exportAllSide" class="btn primary">一鍵產生全部圖檔</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h1 class="text-3xl font-black m-0">投資配息報表系統</h1>
+          <p class="muted font-bold mt-1">用舊備份資料直接接續，批次更新後即可輸出所有客戶報表圖檔。</p>
+        </div>
+        <div class="flex gap-2 flex-wrap justify-end">
+          <input id="importBackupInput" type="file" accept=".json,application/json" hidden />
+          <button id="loadBackupBtn" class="btn ghost">匯入備份</button>
+          <button id="downloadBackupTop" class="btn green">下載備份</button>
+          <button id="exportAllTop" class="btn primary">全部客戶 PNG</button>
+        </div>
+      </div>
+
+      <section id="tab-dashboard" class="tab-view">
+        <div class="grid-kpi">
+          <div class="kpi"><div class="label">客戶數</div><div id="kpiClients" class="value">0</div></div>
+          <div class="kpi"><div class="label">保單/標的筆數</div><div id="kpiAccounts" class="value">0</div></div>
+          <div class="kpi"><div class="label">全年現金給付</div><div id="kpiCash" class="value">NT$ 0</div></div>
+          <div class="kpi"><div class="label">累積單位/轉投資</div><div id="kpiUnits" class="value">NT$ 0</div></div>
+        </div>
+        <div class="two-col">
+          <div class="panel panel-pad">
+            <div class="toolbar mb-3">
+              <div>
+                <div class="text-sm font-black text-slate-500">報表預覽</div>
+                <select id="clientSelect" class="field mt-1"></select>
+              </div>
+              <div class="flex gap-2">
+                <button id="downloadCurrentPng" class="btn primary">下載此客戶圖檔</button>
+              </div>
+            </div>
+            <div id="reportPreview" class="report-card screen"></div>
+          </div>
+          <div class="panel panel-pad">
+            <div class="toolbar mb-3">
+              <div>
+                <div class="text-sm font-black text-slate-500">客戶清單</div>
+                <div class="text-xs muted font-bold">點選即可切換預覽</div>
+              </div>
+              <button id="addClientBtn" class="btn ghost">新增客戶</button>
+            </div>
+            <input id="clientSearch" class="field mb-3" placeholder="搜尋客戶、保單或標的" />
+            <div id="clientList" class="client-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-batch" class="tab-view hidden">
+        <div class="two-col">
+          <div class="panel panel-pad">
+            <div class="toolbar mb-3">
+              <div>
+                <h2 class="text-xl font-black m-0">快速更新資料</h2>
+                <p class="muted text-sm font-bold mt-1">格式：保單號碼 , 客戶姓名 , 基金標的 , 最新基準日單位數 , 月份 , 配息金額 , 給付方式</p>
+              </div>
+            </div>
+            <textarea id="batchText" class="field" style="height: 245px; font-family: Consolas, monospace; line-height: 1.55;" placeholder="46001 , Ping , 環球總報酬 , 5321 , 7月 , 12000 , 現金給付&#10;45993 , 小蕙阿姨 , 鑫穩健-A1 , 19138.0584 , 6月 , 2718 , 累積單位數"></textarea>
+            <div class="flex gap-2 mt-3 flex-wrap">
+              <button id="parseBatchBtn" class="btn primary">比對解析</button>
+              <button id="applyBatchBtn" class="btn green" disabled>確認寫入</button>
+              <button id="clearBatchBtn" class="btn ghost">清空</button>
+            </div>
+            <div class="mt-5">
+              <div class="toolbar mb-2">
+                <div class="font-black">基金截圖參考區</div>
+                <div>
+                  <input id="imageRefInput" type="file" accept="image/*" hidden />
+                  <button id="imageRefBtn" class="btn ghost">上傳截圖參考</button>
+                </div>
+              </div>
+              <div id="imageReference" class="image-reference">
+                <div class="text-center muted font-bold p-8">不使用外部 API。上傳截圖後，可看著圖片把資料貼到上方格式欄。</div>
+              </div>
+            </div>
+          </div>
+          <div class="panel panel-pad">
+            <div class="toolbar mb-3">
+              <div class="font-black">批次核對清單</div>
+              <div id="batchStats" class="flex gap-1 flex-wrap"></div>
+            </div>
+            <div id="batchRows" class="grid gap-2 max-h-[720px] overflow-auto"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-clients" class="tab-view hidden">
+        <div class="two-col">
+          <div class="panel panel-pad">
+            <div class="toolbar mb-3">
+              <div>
+                <h2 class="text-xl font-black m-0">客戶基本資料</h2>
+                <p class="muted text-sm font-bold mt-1">可快速修正客戶名稱、保單、基金與單位數。</p>
+              </div>
+              <button id="saveClientEdit" class="btn green">儲存修改</button>
+            </div>
+            <div id="clientEditor"></div>
+          </div>
+          <div class="panel panel-pad">
+            <h2 class="text-xl font-black m-0 mb-3">月份資料</h2>
+            <div id="monthlyEditor" class="overflow-auto"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-backup" class="tab-view hidden">
+        <div class="two-col">
+          <div class="panel panel-pad">
+            <h2 class="text-xl font-black m-0">備份與還原</h2>
+            <p class="muted font-bold mt-2">資料儲存在此瀏覽器。建議每次更新後下載 JSON 備份，換電腦或清除瀏覽器資料前務必備份。</p>
+            <div class="grid gap-3 mt-4">
+              <button id="downloadBackupMain" class="btn green">下載目前備份 JSON</button>
+              <button id="loadBackupMain" class="btn primary">匯入 JSON 備份</button>
+              <button id="loadSampleBackup" class="btn ghost">嘗試載入同資料夾的 20260523 備份</button>
+              <button id="resetDataBtn" class="btn rose">清空並建立空白資料</button>
+            </div>
+          </div>
+          <div class="panel panel-pad">
+            <h2 class="text-xl font-black m-0">離開頁面提醒</h2>
+            <p class="muted font-bold mt-2">只要資料有修改，關閉或重新整理頁面時，瀏覽器會跳出離開確認。瀏覽器安全限制不允許在關閉瞬間自動下載檔案，所以請按「下載備份 JSON」。</p>
+            <div id="backupLog" class="mt-4 text-sm font-bold text-slate-600"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="renderHost" class="hidden-render"></div>
+
+  <script>
+    const STORAGE_KEY = "fund_report_index2_state_v1";
+    const CASH_TYPE = "現金給付";
+    const UNIT_TYPE = "累積單位數";
+    const TRANSFER_TYPE = "轉投資標的";
+    const TYPE_ORDER = [CASH_TYPE, UNIT_TYPE, TRANSFER_TYPE];
+
+    const state = {
+      clients: [],
+      products: [],
+      activeClientId: "",
+      batchRows: [],
+      imageRef: "",
+      dirty: false,
+      tab: "dashboard"
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const money = (n, curr = "TWD") => `${curr === "USD" ? "US$" : "NT$"} ${Number(n || 0).toLocaleString("en-US")}`;
+    const numberText = (n) => Number(n || 0).toLocaleString("en-US");
+    const uid = (prefix) => `${prefix}${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
+    const monthName = (value) => {
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      return raw.endsWith("月") ? raw : `${raw.replace(/月/g, "")}月`;
+    };
+    const parseAmount = (value) => {
+      const text = String(value || "").trim();
+      if (!text) return 0;
+      if (text.includes("萬")) return (parseFloat(text.replace(/萬/g, "")) || 0) * 10000;
+      return parseFloat(text.replace(/[^0-9.-]/g, "")) || 0;
+    };
+    const getDigits = (value) => String(value || "").replace(/\D/g, "");
+    const last5 = (value) => {
+      const d = getDigits(value);
+      return d.length >= 5 ? d.slice(-5) : d;
+    };
+    const normalizePolicy = (value) => String(value || "").toLowerCase().replace(/[\s\-＿_—–()（）[\]【】]/g, "");
+    const samePolicy = (db, input) => {
+      const a = String(db || "").trim();
+      const b = String(input || "").trim();
+      if (!a || !b) return false;
+      if (a === b) return true;
+      const na = normalizePolicy(a);
+      const nb = normalizePolicy(b);
+      if (na && nb && (na === nb || na.includes(nb) || nb.includes(na))) return true;
+      const da = last5(a);
+      const db5 = last5(b);
+      return da.length === 5 && db5.length === 5 && da === db5;
+    };
+    const parseType = (value) => {
+      const text = String(value || "").trim();
+      if (text.includes("轉投資") || text.includes("轉標的")) return TRANSFER_TYPE;
+      if (text.includes("單位") || text.includes("累積") || text.includes("再投入")) return UNIT_TYPE;
+      return CASH_TYPE;
+    };
+    const nextType = (type) => TYPE_ORDER[(TYPE_ORDER.indexOf(type) + 1) % TYPE_ORDER.length] || CASH_TYPE;
+    const typeClass = (type) => type === TRANSFER_TYPE ? "type-chip type-transfer" : type === UNIT_TYPE ? "type-chip type-unit" : "type-chip type-cash";
+    const typeLabel = (type) => type === TRANSFER_TYPE ? "轉投資" : type === UNIT_TYPE ? "單位" : "現金";
+    const isUnitLike = (type) => type === UNIT_TYPE || type === TRANSFER_TYPE;
+
+    function createEmptyClient(name = "新客戶") {
+      const a1 = uid("A");
+      const a2 = uid("A");
+      return {
+        id: uid("C"),
+        clientName: name,
+        reportTitle: "年度投資配息與再投入追蹤",
+        accounts: [
+          { id: a1, name: "鑫穩健-A1", acc: "", policyDate: "", invest: 0, units: 0, currency: "TWD" },
+          { id: a2, name: "安聯收益成長", acc: "", policyDate: "", invest: 0, units: 0, currency: "TWD" }
+        ],
+        theme: { accountColors: { [a1]: "#2563eb", [a2]: "#059669" }, lineTotal: "#f59e0b", heroBg: "#0f172a" },
+        rawMonthlyData: Array.from({ length: 12 }, (_, i) => ({ month: `${i + 1}月`, [a1]: 0, [a2]: 0, [`${a1}_type`]: CASH_TYPE, [`${a2}_type`]: CASH_TYPE })),
+        eventRecords: []
+      };
+    }
+
+    function markDirty() {
+      state.dirty = true;
+      $("dirtyNotice").classList.add("show");
+      saveLocal();
+    }
+    function saveLocal() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        clients: state.clients,
+        products: state.products,
+        activeClientId: state.activeClientId,
+        imageRef: state.imageRef
+      }));
+    }
+    function loadLocal() {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return false;
+      try {
+        const data = JSON.parse(raw);
+        state.clients = normalizeClients(data.clients || []);
+        state.products = data.products || [];
+        state.activeClientId = data.activeClientId || state.clients[0]?.id || "";
+        state.imageRef = data.imageRef || "";
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    function normalizeClients(clients) {
+      return (clients || []).map((client) => {
+        const accounts = (client.accounts || []).map((acc) => ({ currency: "TWD", invest: 0, units: 0, ...acc }));
+        const rawMonthlyData = (client.rawMonthlyData && client.rawMonthlyData.length ? client.rawMonthlyData : Array.from({ length: 12 }, (_, i) => ({ month: `${i + 1}月` }))).map((row, idx) => {
+          const next = { month: monthName(row.month || `${idx + 1}月`) };
+          accounts.forEach((acc) => {
+            next[acc.id] = row[acc.id] ?? 0;
+            next[`${acc.id}_type`] = row[`${acc.id}_type`] || CASH_TYPE;
+          });
+          return next;
+        });
+        return {
+          ...client,
+          accounts,
+          rawMonthlyData,
+          theme: client.theme || { accountColors: {}, lineTotal: "#f59e0b", heroBg: "#0f172a" },
+          eventRecords: client.eventRecords || []
+        };
+      });
+    }
+    function activeClient() {
+      return state.clients.find((c) => c.id === state.activeClientId) || state.clients[0];
+    }
+
+    function totalsForClient(client) {
+      let cash = 0;
+      let units = 0;
+      let all = 0;
+      (client.rawMonthlyData || []).forEach((row) => {
+        (client.accounts || []).forEach((acc) => {
+          const amount = Number(row[acc.id] || 0);
+          const type = row[`${acc.id}_type`] || CASH_TYPE;
+          all += amount;
+          if (type === CASH_TYPE) cash += amount;
+          if (isUnitLike(type)) units += amount;
+        });
+      });
+      return { cash, units, all };
+    }
+    function totalsAll() {
+      return state.clients.reduce((sum, c) => {
+        const t = totalsForClient(c);
+        sum.cash += t.cash;
+        sum.units += t.units;
+        sum.accounts += (c.accounts || []).length;
+        return sum;
+      }, { cash: 0, units: 0, accounts: 0 });
+    }
+
+    function render() {
+      renderNav();
+      renderKpis();
+      renderClientSelectors();
+      renderClientList();
+      renderReportPreview();
+      renderBatchRows();
+      renderImageReference();
+      renderClientEditor();
+      renderMonthlyEditor();
+      $("dirtyNotice").classList.toggle("show", state.dirty);
+    }
+    function renderNav() {
+      document.querySelectorAll(".nav-btn").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.tab === state.tab);
+      });
+      document.querySelectorAll(".tab-view").forEach((view) => view.classList.add("hidden"));
+      $(`tab-${state.tab}`).classList.remove("hidden");
+    }
+    function renderKpis() {
+      const t = totalsAll();
+      $("kpiClients").textContent = state.clients.length;
+      $("kpiAccounts").textContent = t.accounts;
+      $("kpiCash").textContent = money(t.cash);
+      $("kpiUnits").textContent = money(t.units);
+    }
+    function renderClientSelectors() {
+      const select = $("clientSelect");
+      select.innerHTML = state.clients.map((c) => `<option value="${c.id}">${escapeHtml(c.clientName)}</option>`).join("");
+      select.value = state.activeClientId;
+    }
+    function renderClientList() {
+      const q = $("clientSearch").value.trim().toLowerCase();
+      const list = state.clients.filter((c) => {
+        const blob = [c.clientName, ...(c.accounts || []).flatMap((a) => [a.acc, a.name])].join(" ").toLowerCase();
+        return !q || blob.includes(q);
+      });
+      $("clientList").innerHTML = list.map((c) => {
+        const t = totalsForClient(c);
+        return `<button class="client-item ${c.id === state.activeClientId ? "active" : ""}" data-client="${c.id}">
+          <div class="min-w-0 text-left">
+            <div class="font-black truncate">${escapeHtml(c.clientName)}</div>
+            <div class="text-xs muted font-bold">${(c.accounts || []).length} 筆標的 · 現金 ${numberText(t.cash)} · 單位/轉投資 ${numberText(t.units)}</div>
+          </div>
+          <span class="text-slate-400 font-black">›</span>
+        </button>`;
+      }).join("");
+    }
+    function renderReportPreview() {
+      const client = activeClient();
+      $("reportPreview").innerHTML = client ? reportHtml(client, true) : emptyState("請先新增或匯入客戶資料");
+    }
+    function reportHtml(client, screen = false) {
+      const t = totalsForClient(client);
+      const rows = (client.rawMonthlyData || []);
+      const accounts = client.accounts || [];
+      const maxMonth = Math.max(1, ...rows.map((row) => accounts.reduce((s, a) => s + Number(row[a.id] || 0), 0)));
+      const bars = rows.map((row) => {
+        const total = accounts.reduce((s, a) => s + Number(row[a.id] || 0), 0);
+        return `<div class="bar-line"><div>${escapeHtml(row.month)}</div><div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, total / maxMonth * 100)}%"></div></div><div>${numberText(total)}</div></div>`;
+      }).join("");
+      const accountRows = accounts.map((acc) => {
+        const total = rows.reduce((s, row) => s + Number(row[acc.id] || 0), 0);
+        return `<tr><td>${escapeHtml(acc.acc || "-")}</td><td>${escapeHtml(acc.name || "-")}</td><td>${numberText(acc.units)}</td><td>${money(acc.invest, acc.currency)}</td><td>${numberText(total)}</td></tr>`;
+      }).join("");
+      const monthHeader = rows.map((r) => `<th>${escapeHtml(r.month)}</th>`).join("");
+      const monthRows = accounts.map((acc) => `<tr><td>${escapeHtml(acc.acc || "-")}</td><td>${escapeHtml(acc.name || "-")}</td>${rows.map((r) => `<td>${numberText(r[acc.id] || 0)}</td>`).join("")}</tr>`).join("");
+      return `
+        <div class="${screen ? "" : "report-card"}">
+          <div class="report-head">
+            <div>
+              <div class="report-title">${escapeHtml(client.reportTitle || "投資配息追蹤報表")}</div>
+              <div class="muted font-black mt-2">報表產生：${new Date().toLocaleDateString("zh-TW")}</div>
+            </div>
+            <div class="text-right">
+              <div class="mini-label">客戶</div>
+              <div class="client-name">${escapeHtml(client.clientName || "-")}</div>
+            </div>
+          </div>
+          <div class="summary-row">
+            <div class="summary-box"><div class="mini-label">全年現金給付</div><div class="mini-value">${money(t.cash)}</div></div>
+            <div class="summary-box"><div class="mini-label">累積單位 / 轉投資</div><div class="mini-value">${money(t.units)}</div></div>
+            <div class="summary-box"><div class="mini-label">總撥回</div><div class="mini-value">${money(t.all)}</div></div>
+          </div>
+          <div class="panel panel-pad mb-4" style="box-shadow:none;">
+            <div class="font-black mb-3">每月撥回趨勢</div>
+            <div class="bars">${bars}</div>
+          </div>
+          <div class="grid gap-4">
+            <div>
+              <div class="font-black mb-2">保單與標的總覽</div>
+              <table><thead><tr><th>保單</th><th>基金標的</th><th>基準日單位數</th><th>投入金額</th><th>年度合計</th></tr></thead><tbody>${accountRows}</tbody></table>
+            </div>
+            <div>
+              <div class="font-black mb-2">每月撥回明細</div>
+              <div style="overflow:auto;"><table><thead><tr><th>保單</th><th>基金標的</th>${monthHeader}</tr></thead><tbody>${monthRows}</tbody></table></div>
+            </div>
+          </div>
+        </div>`;
+    }
+    function emptyState(text) {
+      return `<div class="p-8 text-center muted font-black">${escapeHtml(text)}</div>`;
+    }
+
+    function renderBatchRows() {
+      const rows = state.batchRows;
+      const ok = rows.filter((r) => r.status === "ok").length;
+      const fix = rows.filter((r) => r.status === "fix").length;
+      const warn = rows.filter((r) => r.status === "warn").length;
+      $("batchStats").innerHTML = rows.length ? `
+        <span class="badge ok">OK ${ok}</span>
+        <span class="badge warn">CHECK ${warn}</span>
+        <span class="badge fix">FIX ${fix}</span>
+        <span class="badge">TOTAL ${rows.length}</span>` : "";
+      $("applyBatchBtn").disabled = !rows.length || fix > 0 || !rows.some((r) => r.clientId && r.accountId);
+      $("batchRows").innerHTML = rows.length ? rows.map(batchRowHtml).join("") : emptyState("尚未解析。請先貼上資料後按比對解析。");
+    }
+    function batchRowHtml(row) {
+      const client = state.clients.find((c) => c.id === row.clientId);
+      const acc = client?.accounts?.find((a) => a.id === row.accountId);
+      const statusClass = row.status === "ok" ? "ok" : row.status === "warn" ? "warn" : "fix";
+      const open = row.status !== "ok" ? "open" : "";
+      return `<details class="batch-row" data-row="${row.id}" ${open}>
+        <summary>
+          <span class="badge ${statusClass}">${row.status.toUpperCase()}</span>
+          <div class="min-w-0">
+            <div class="font-black text-sm truncate">Line ${row.lineIndex} | ${escapeHtml(client?.clientName || "未指定客戶")} | ${escapeHtml(acc?.acc || row.policyInput || "未指定保單")} | ${escapeHtml(acc?.name || row.fundInput || "未指定基金")}</div>
+            <div class="text-xs muted font-bold truncate">Units ${escapeHtml(row.units)} · ${row.dividends.map((d) => `${escapeHtml(d.month)} ${escapeHtml(d.amount)} ${typeLabel(d.type)}`).join(" / ") || "no dividend"}</div>
+          </div>
+          <button class="btn rose" data-action="remove-row" data-id="${row.id}">移除</button>
+        </summary>
+        <div class="p-3 border-t border-slate-200 grid gap-3">
+          <div class="text-xs font-black ${row.status === "fix" ? "text-rose-700" : row.status === "warn" ? "text-amber-700" : "text-emerald-700"}">${escapeHtml(row.message)}</div>
+          <div class="grid grid-cols-2 gap-2">
+            <select class="field" data-action="row-client" data-id="${row.id}">
+              <option value="">-- 指定客戶 --</option>
+              ${state.clients.map((c) => `<option value="${c.id}" ${c.id === row.clientId ? "selected" : ""}>${escapeHtml(c.clientName)}</option>`).join("")}
+            </select>
+            <select class="field" data-action="row-account" data-id="${row.id}">
+              <option value="">-- 指定保單/基金 --</option>
+              ${(client?.accounts || []).map((a) => `<option value="${a.id}" ${a.id === row.accountId ? "selected" : ""}>${escapeHtml(a.acc || "-")} - ${escapeHtml(a.name || "-")}</option>`).join("")}
+            </select>
+          </div>
+          <input class="field" data-action="row-units" data-id="${row.id}" value="${escapeAttr(row.units)}" placeholder="最新基準日單位數" />
+          <div class="grid gap-2">
+            ${row.dividends.map((d) => `<div class="grid grid-cols-[70px_1fr_auto_auto] gap-2" data-div="${d.id}">
+              <input class="field" data-action="div-month" data-id="${row.id}" data-div="${d.id}" value="${escapeAttr(d.month)}" />
+              <input class="field" data-action="div-amount" data-id="${row.id}" data-div="${d.id}" value="${escapeAttr(d.amount)}" />
+              <button class="${typeClass(d.type)}" data-action="div-type" data-id="${row.id}" data-div="${d.id}">${typeLabel(d.type)}</button>
+              <button class="btn rose" data-action="div-remove" data-id="${row.id}" data-div="${d.id}">×</button>
+            </div>`).join("")}
+          </div>
+          <button class="btn ghost" data-action="div-add" data-id="${row.id}">新增月份</button>
+        </div>
+      </details>`;
+    }
+
+    function findMatch(policyInput, clientNameInput, fundInput) {
+      let best = null;
+      let bestScore = 0;
+      state.clients.forEach((client) => {
+        let clientScore = 0;
+        if (clientNameInput && client.clientName) {
+          if (client.clientName === clientNameInput) clientScore += 50;
+          else if (client.clientName.includes(clientNameInput) || clientNameInput.includes(client.clientName)) clientScore += 25;
+        }
+        (client.accounts || []).forEach((acc) => {
+          let score = clientScore;
+          if (samePolicy(acc.acc, policyInput)) score += 90;
+          if (fundInput && acc.name) {
+            if (acc.name === fundInput) score += 40;
+            else if (acc.name.includes(fundInput) || fundInput.includes(acc.name)) score += 22;
+          }
+          if (score > bestScore && score >= 30) {
+            bestScore = score;
+            best = { clientId: client.id, accountId: acc.id, score };
+          }
+        });
+      });
+      return best;
+    }
+    function parseBatch() {
+      const text = $("batchText").value.trim();
+      if (!text) return;
+      state.batchRows = text.split(/\r?\n/).map((line, index) => {
+        const raw = line.trim();
+        if (!raw) return null;
+        const parts = raw.split(/[,，|\t]+/).map((p) => p.trim());
+        if (parts.length < 7) {
+          return { id: uid("R"), lineIndex: index + 1, raw, status: "fix", message: "格式欄位不足", policyInput: parts[0] || "", clientId: "", accountId: "", fundInput: parts[2] || "", units: parts[3] || "0", dividends: [] };
+        }
+        const [policyInput, clientNameInput, fundInput, units] = parts;
+        const match = findMatch(policyInput, clientNameInput, fundInput);
+        const dividends = [];
+        for (let i = 4; i < parts.length; i += 3) {
+          if (!parts[i] || parts[i + 1] === undefined) continue;
+          dividends.push({ id: uid("D"), month: monthName(parts[i]), amount: parts[i + 1], type: parseType(parts[i + 2] || CASH_TYPE) });
+        }
+        return {
+          id: uid("R"),
+          lineIndex: index + 1,
+          raw,
+          status: match && dividends.length ? "ok" : match ? "warn" : "fix",
+          message: match ? "已找到對應保單，請核對後寫入。" : "找不到對應保單，請手動指定客戶與保單。",
+          policyInput,
+          fundInput,
+          clientId: match?.clientId || "",
+          accountId: match?.accountId || "",
+          units: units || "0",
+          dividends
+        };
+      }).filter(Boolean);
+      renderBatchRows();
+    }
+    function applyBatch() {
+      state.batchRows.forEach((row) => {
+        if (!row.clientId || !row.accountId) return;
+        const client = state.clients.find((c) => c.id === row.clientId);
+        const acc = client?.accounts?.find((a) => a.id === row.accountId);
+        if (!client || !acc) return;
+        acc.units = parseFloat(row.units) || 0;
+        row.dividends.forEach((div) => {
+          const month = monthName(div.month);
+          let monthRow = client.rawMonthlyData.find((r) => r.month === month);
+          if (!monthRow) {
+            monthRow = { month };
+            client.accounts.forEach((a) => { monthRow[a.id] = 0; monthRow[`${a.id}_type`] = CASH_TYPE; });
+            client.rawMonthlyData.push(monthRow);
+          }
+          monthRow[acc.id] = parseAmount(div.amount);
+          monthRow[`${acc.id}_type`] = div.type;
+        });
+      });
+      state.batchRows = [];
+      $("batchText").value = "";
+      markDirty();
+      render();
+    }
+
+    function renderImageReference() {
+      $("imageReference").innerHTML = state.imageRef ? `<img src="${state.imageRef}" alt="基金截圖參考" />` : `<div class="text-center muted font-bold p-8">不使用外部 API。上傳截圖後，可看著圖片把資料貼到上方格式欄。</div>`;
+    }
+    function renderClientEditor() {
+      const client = activeClient();
+      if (!client) { $("clientEditor").innerHTML = emptyState("尚無客戶"); return; }
+      $("clientEditor").innerHTML = `
+        <div class="grid gap-3">
+          <label class="grid gap-1 text-sm font-black">客戶名稱<input class="field" id="editClientName" value="${escapeAttr(client.clientName)}" /></label>
+          <label class="grid gap-1 text-sm font-black">報表標題<input class="field" id="editReportTitle" value="${escapeAttr(client.reportTitle || "")}" /></label>
+          <div class="font-black mt-2">保單與基金標的</div>
+          <div class="grid gap-2">
+            ${(client.accounts || []).map((a) => `<div class="grid grid-cols-[1fr_1.2fr_1fr_1fr_90px] gap-2" data-account-edit="${a.id}">
+              <input class="field" data-edit="acc" value="${escapeAttr(a.acc || "")}" placeholder="保單號碼" />
+              <input class="field" data-edit="name" value="${escapeAttr(a.name || "")}" placeholder="基金標的" />
+              <input class="field" data-edit="units" value="${escapeAttr(a.units || 0)}" placeholder="單位數" />
+              <input class="field" data-edit="invest" value="${escapeAttr(a.invest || 0)}" placeholder="投入金額" />
+              <button class="btn rose" data-action="delete-account" data-id="${a.id}">刪除</button>
+            </div>`).join("")}
+          </div>
+          <button class="btn ghost" id="addAccountBtn">新增標的</button>
+        </div>`;
+    }
+    function renderMonthlyEditor() {
+      const client = activeClient();
+      if (!client) { $("monthlyEditor").innerHTML = emptyState("尚無客戶"); return; }
+      const rows = client.rawMonthlyData || [];
+      const accounts = client.accounts || [];
+      $("monthlyEditor").innerHTML = `<table><thead><tr><th>月份</th>${accounts.map((a) => `<th>${escapeHtml(a.acc || "-")} ${escapeHtml(a.name || "")}</th>`).join("")}</tr></thead><tbody>
+        ${rows.map((row, rowIndex) => `<tr><td><input class="field" data-month-row="${rowIndex}" data-month-field="month" value="${escapeAttr(row.month)}" /></td>
+          ${accounts.map((a) => `<td><div class="grid grid-cols-[1fr_auto] gap-2">
+            <input class="field" data-month-row="${rowIndex}" data-account="${a.id}" value="${escapeAttr(row[a.id] || 0)}" />
+            <button class="${typeClass(row[`${a.id}_type`] || CASH_TYPE)}" data-action="month-type" data-row="${rowIndex}" data-account="${a.id}">${typeLabel(row[`${a.id}_type`] || CASH_TYPE)}</button>
+          </div></td>`).join("")}</tr>`).join("")}
+      </tbody></table>`;
+    }
+
+    async function downloadClientPng(client) {
+      const host = $("renderHost");
+      host.innerHTML = `<div class="report-card">${reportHtml(client, false)}</div>`;
+      const canvas = await html2canvas(host.firstElementChild, { scale: 2, backgroundColor: "#ffffff" });
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      host.innerHTML = "";
+      return blob;
+    }
+    async function downloadCurrentPng() {
+      const client = activeClient();
+      if (!client) return;
+      const blob = await downloadClientPng(client);
+      downloadBlob(blob, `${safeName(client.clientName)}_配息報表.png`);
+    }
+    async function exportAllPng() {
+      if (!state.clients.length) return alert("尚無客戶資料。");
+      const zip = new JSZip();
+      for (const client of state.clients) {
+        const blob = await downloadClientPng(client);
+        zip.file(`${safeName(client.clientName)}_配息報表.png`, blob);
+      }
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      downloadBlob(zipBlob, `全部客戶配息報表_${dateStamp()}.zip`);
+    }
+    function backupData() {
+      return {
+        exportDate: new Date().toLocaleString("zh-TW"),
+        source: "index2",
+        clients: state.clients,
+        products: state.products,
+        globalFontScales: { global: 1, header: 1, kpi: 1, chart: 1, table: 1, events: 1 }
+      };
+    }
+    function downloadBackup() {
+      const blob = new Blob([JSON.stringify(backupData(), null, 2)], { type: "application/json;charset=utf-8" });
+      downloadBlob(blob, `投資系統備份_index2_${dateStamp()}.json`);
+      state.dirty = false;
+      $("dirtyNotice").classList.remove("show");
+      $("backupLog").textContent = `已下載備份：${new Date().toLocaleString("zh-TW")}`;
+    }
+    function downloadBlob(blob, name) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    async function tryLoadSampleBackup() {
+      try {
+        const res = await fetch("./投資系統備份_20260523.json");
+        if (!res.ok) throw new Error("fetch failed");
+        const data = await res.json();
+        importBackupData(data);
+      } catch {
+        alert("無法直接載入同資料夾備份。請改用「匯入備份」選取 JSON 檔。");
+      }
+    }
+    function importBackupData(data) {
+      state.clients = normalizeClients(data.clients || []);
+      state.products = data.products || [];
+      if (!state.clients.length) state.clients = [createEmptyClient()];
+      state.activeClientId = state.clients[0].id;
+      state.batchRows = [];
+      markDirty();
+      render();
+    }
+    function readBackupFile(file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try { importBackupData(JSON.parse(reader.result)); }
+        catch { alert("備份檔格式無法讀取。"); }
+      };
+      reader.readAsText(file, "utf-8");
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[m]));
+    }
+    function escapeAttr(value) { return escapeHtml(value).replace(/`/g, "&#096;"); }
+    function safeName(value) { return String(value || "client").replace(/[\\/:*?"<>|]/g, "_"); }
+    function dateStamp() {
+      const d = new Date();
+      return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,"0")}${String(d.getDate()).padStart(2,"0")}_${String(d.getHours()).padStart(2,"0")}${String(d.getMinutes()).padStart(2,"0")}`;
+    }
+
+    document.addEventListener("click", (e) => {
+      const nav = e.target.closest(".nav-btn");
+      if (nav) { state.tab = nav.dataset.tab; render(); return; }
+      const clientBtn = e.target.closest("[data-client]");
+      if (clientBtn) { state.activeClientId = clientBtn.dataset.client; saveLocal(); render(); return; }
+      const action = e.target.dataset.action;
+      if (action === "remove-row") {
+        state.batchRows = state.batchRows.filter((r) => r.id !== e.target.dataset.id);
+        renderBatchRows();
+      }
+      if (action === "div-type") {
+        const row = state.batchRows.find((r) => r.id === e.target.dataset.id);
+        const div = row?.dividends.find((d) => d.id === e.target.dataset.div);
+        if (div) div.type = nextType(div.type);
+        renderBatchRows();
+      }
+      if (action === "div-remove") {
+        const row = state.batchRows.find((r) => r.id === e.target.dataset.id);
+        if (row) row.dividends = row.dividends.filter((d) => d.id !== e.target.dataset.div);
+        renderBatchRows();
+      }
+      if (action === "div-add") {
+        const row = state.batchRows.find((r) => r.id === e.target.dataset.id);
+        if (row) row.dividends.push({ id: uid("D"), month: "", amount: "", type: CASH_TYPE });
+        renderBatchRows();
+      }
+      if (action === "delete-account") {
+        const client = activeClient();
+        client.accounts = client.accounts.filter((a) => a.id !== e.target.dataset.id);
+        markDirty();
+        render();
+      }
+      if (action === "month-type") {
+        const client = activeClient();
+        const row = client.rawMonthlyData[Number(e.target.dataset.row)];
+        const id = e.target.dataset.account;
+        row[`${id}_type`] = nextType(row[`${id}_type`] || CASH_TYPE);
+        markDirty();
+        render();
+      }
+    });
+    document.addEventListener("input", (e) => {
+      const action = e.target.dataset.action;
+      if (action === "row-units") {
+        const row = state.batchRows.find((r) => r.id === e.target.dataset.id);
+        if (row) row.units = e.target.value;
+      }
+      if (action === "div-month" || action === "div-amount") {
+        const row = state.batchRows.find((r) => r.id === e.target.dataset.id);
+        const div = row?.dividends.find((d) => d.id === e.target.dataset.div);
+        if (div) div[action === "div-month" ? "month" : "amount"] = e.target.value;
+      }
+      if (e.target.id === "clientSearch") renderClientList();
+      if (e.target.dataset.monthRow !== undefined) {
+        const client = activeClient();
+        const row = client.rawMonthlyData[Number(e.target.dataset.monthRow)];
+        if (e.target.dataset.monthField === "month") row.month = e.target.value;
+        if (e.target.dataset.account) row[e.target.dataset.account] = e.target.value === "" ? "" : parseAmount(e.target.value);
+        markDirty();
+      }
+    });
+    document.addEventListener("change", (e) => {
+      const action = e.target.dataset.action;
+      if (action === "row-client") {
+        const row = state.batchRows.find((r) => r.id === e.target.dataset.id);
+        if (row) {
+          row.clientId = e.target.value;
+          row.accountId = "";
+          row.status = row.clientId ? "warn" : "fix";
+          row.message = row.clientId ? "請指定保單/基金。" : "請指定客戶。";
+        }
+        renderBatchRows();
+      }
+      if (action === "row-account") {
+        const row = state.batchRows.find((r) => r.id === e.target.dataset.id);
+        if (row) {
+          row.accountId = e.target.value;
+          row.status = row.clientId && row.accountId ? "ok" : "warn";
+          row.message = row.status === "ok" ? "已手動指定，請核對後寫入。" : "請指定客戶與保單。";
+        }
+        renderBatchRows();
+      }
+    });
+
+    $("clientSelect").addEventListener("change", (e) => { state.activeClientId = e.target.value; saveLocal(); render(); });
+    $("parseBatchBtn").addEventListener("click", parseBatch);
+    $("applyBatchBtn").addEventListener("click", applyBatch);
+    $("clearBatchBtn").addEventListener("click", () => { $("batchText").value = ""; state.batchRows = []; renderBatchRows(); });
+    $("addClientBtn").addEventListener("click", () => { const c = createEmptyClient(`新客戶${state.clients.length + 1}`); state.clients.push(c); state.activeClientId = c.id; markDirty(); render(); });
+    $("downloadCurrentPng").addEventListener("click", downloadCurrentPng);
+    $("exportAllTop").addEventListener("click", exportAllPng);
+    $("exportAllSide").addEventListener("click", exportAllPng);
+    $("downloadBackupTop").addEventListener("click", downloadBackup);
+    $("downloadBackupSide").addEventListener("click", downloadBackup);
+    $("downloadBackupMain").addEventListener("click", downloadBackup);
+    $("loadBackupBtn").addEventListener("click", () => $("importBackupInput").click());
+    $("loadBackupMain").addEventListener("click", () => $("importBackupInput").click());
+    $("importBackupInput").addEventListener("change", (e) => { if (e.target.files[0]) readBackupFile(e.target.files[0]); e.target.value = ""; });
+    $("loadSampleBackup").addEventListener("click", tryLoadSampleBackup);
+    $("resetDataBtn").addEventListener("click", () => {
+      if (!confirm("確定清空目前 index2 資料並建立空白資料？")) return;
+      state.clients = [createEmptyClient()];
+      state.products = [];
+      state.activeClientId = state.clients[0].id;
+      markDirty();
+      render();
+    });
+    $("imageRefBtn").addEventListener("click", () => $("imageRefInput").click());
+    $("imageRefInput").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => { state.imageRef = reader.result; markDirty(); renderImageReference(); };
+      reader.readAsDataURL(file);
+    });
+    $("saveClientEdit").addEventListener("click", () => {
+      const client = activeClient();
+      if (!client) return;
+      client.clientName = $("editClientName").value;
+      client.reportTitle = $("editReportTitle").value;
+      document.querySelectorAll("[data-account-edit]").forEach((row) => {
+        const acc = client.accounts.find((a) => a.id === row.dataset.accountEdit);
+        if (!acc) return;
+        row.querySelectorAll("[data-edit]").forEach((input) => {
+          acc[input.dataset.edit] = input.dataset.edit === "invest" || input.dataset.edit === "units" ? parseAmount(input.value) : input.value;
+        });
+      });
+      markDirty();
+      render();
+    });
+    document.addEventListener("click", (e) => {
+      if (e.target.id === "addAccountBtn") {
+        const client = activeClient();
+        const id = uid("A");
+        client.accounts.push({ id, name: "", acc: "", policyDate: "", invest: 0, units: 0, currency: "TWD" });
+        client.rawMonthlyData.forEach((row) => { row[id] = 0; row[`${id}_type`] = CASH_TYPE; });
+        client.theme.accountColors[id] = "#2563eb";
+        markDirty();
+        render();
+      }
+    });
+
+    window.addEventListener("beforeunload", (e) => {
+      if (!state.dirty) return;
+      e.preventDefault();
+      e.returnValue = "資料尚未備份，確定要離開？";
+      return e.returnValue;
+    });
+
+    if (!loadLocal()) {
+      state.clients = [createEmptyClient()];
+      state.activeClientId = state.clients[0].id;
+      saveLocal();
+    }
+    render();
+  </script>
+</body>
+</html>
