@@ -88,6 +88,8 @@
       border-radius: 10px;
       box-shadow: 0 10px 25px rgba(15,23,42,.04);
     }
+    body.has-report-bg .panel { background: rgba(255,255,255,.90); backdrop-filter: blur(6px); }
+    body.has-report-bg .side { background: rgba(15,23,42,.92); backdrop-filter: blur(6px); }
     .panel-pad { padding: 18px; }
     .toolbar {
       display: flex;
@@ -138,6 +140,13 @@
       grid-template-columns: minmax(0, 1.05fr) minmax(360px, .95fr);
       gap: 16px;
       align-items: start;
+    }
+    .dashboard-report { display: block; }
+    .client-switcher-grid {
+      display: grid;
+      grid-template-columns: minmax(180px, .85fr) minmax(220px, 1fr) auto;
+      gap: 12px;
+      align-items: end;
     }
     .report-card {
       background: #fff;
@@ -279,6 +288,7 @@
       .app-shell { grid-template-columns: 1fr; }
       .side { position: relative; height: auto; }
       .two-col, .grid-kpi { grid-template-columns: 1fr; }
+      .client-switcher-grid { grid-template-columns: 1fr; }
       .topbar { flex-direction: column; }
       .main { padding: 14px; }
       .report-card { padding: 22px; }
@@ -331,12 +341,27 @@
           <div class="kpi"><div class="label">全年現金給付</div><div id="kpiCash" class="value">NT$ 0</div></div>
           <div class="kpi"><div class="label">累積單位/轉投資</div><div id="kpiUnits" class="value">NT$ 0</div></div>
         </div>
-        <div class="two-col">
+        <div class="panel panel-pad mb-4">
+          <div class="toolbar mb-3">
+            <div>
+              <div class="text-sm font-black text-slate-500">客戶清單</div>
+              <div class="text-xs muted font-bold">搜尋後用下拉選單切換報表預覽</div>
+            </div>
+            <button id="addClientBtn" class="btn ghost">新增客戶</button>
+          </div>
+          <div class="client-switcher-grid">
+            <input id="clientSearch" class="field" placeholder="搜尋客戶、保單或標的" />
+            <select id="clientSelect" class="field"></select>
+            <button id="clearClientSearchBtn" class="btn ghost">清除搜尋</button>
+          </div>
+          <div id="clientList" class="client-list mt-3"></div>
+        </div>
+        <div class="dashboard-report">
           <div class="panel panel-pad">
             <div class="toolbar mb-3">
               <div>
                 <div class="text-sm font-black text-slate-500">報表預覽</div>
-                <select id="clientSelect" class="field mt-1"></select>
+                <div class="text-xs muted font-bold">背景照片會同步套用到頁面預覽與下載圖檔</div>
               </div>
               <div class="flex gap-2 flex-wrap justify-end">
                 <input id="reportBgInput" type="file" accept="image/*" hidden />
@@ -348,21 +373,10 @@
             <div id="reportBgControls" class="mb-3 hidden">
               <label class="text-xs font-black text-slate-500 flex items-center gap-2">
                 背景透明度
-                <input id="reportBgOpacity" type="range" min="0.08" max="0.45" step="0.01" value="0.18" style="width: 180px;" />
+                <input id="reportBgOpacity" type="range" min="0.18" max="0.75" step="0.01" value="0.32" style="width: 180px;" />
               </label>
             </div>
             <div id="reportPreview" class="report-card screen"></div>
-          </div>
-          <div class="panel panel-pad">
-            <div class="toolbar mb-3">
-              <div>
-                <div class="text-sm font-black text-slate-500">客戶清單</div>
-                <div class="text-xs muted font-bold">點選即可切換預覽</div>
-              </div>
-              <button id="addClientBtn" class="btn ghost">新增客戶</button>
-            </div>
-            <input id="clientSearch" class="field mb-3" placeholder="搜尋客戶、保單或標的" />
-            <div id="clientList" class="client-list"></div>
           </div>
         </div>
       </section>
@@ -462,7 +476,7 @@
       batchRows: [],
       imageRef: "",
       reportBg: "",
-      reportBgOpacity: 0.18,
+      reportBgOpacity: 0.32,
       dirty: false,
       tab: "dashboard"
     };
@@ -553,7 +567,7 @@
         state.activeClientId = data.activeClientId || state.clients[0]?.id || "";
         state.imageRef = data.imageRef || "";
         state.reportBg = data.reportBg || "";
-        state.reportBgOpacity = typeof data.reportBgOpacity === "number" ? data.reportBgOpacity : 0.18;
+        state.reportBgOpacity = typeof data.reportBgOpacity === "number" ? Math.max(0.32, data.reportBgOpacity) : 0.32;
         return true;
       } catch {
         return false;
@@ -619,6 +633,23 @@
       renderClientEditor();
       renderMonthlyEditor();
       $("dirtyNotice").classList.toggle("show", state.dirty);
+      renderPageBackground();
+    }
+    function renderPageBackground() {
+      if (!state.reportBg) {
+        document.body.classList.remove("has-report-bg");
+        document.body.style.backgroundImage = "";
+        document.body.style.backgroundAttachment = "";
+        document.body.style.backgroundSize = "";
+        document.body.style.backgroundPosition = "";
+        return;
+      }
+      document.body.classList.add("has-report-bg");
+      const veil = Math.max(0.35, 0.78 - state.reportBgOpacity);
+      document.body.style.backgroundImage = `linear-gradient(rgba(238, 243, 248, ${veil}), rgba(238, 243, 248, ${veil})), url("${state.reportBg}")`;
+      document.body.style.backgroundAttachment = "fixed";
+      document.body.style.backgroundSize = "cover";
+      document.body.style.backgroundPosition = "center";
     }
     function renderNav() {
       document.querySelectorAll(".nav-btn").forEach((btn) => {
@@ -636,8 +667,18 @@
     }
     function renderClientSelectors() {
       const select = $("clientSelect");
-      select.innerHTML = state.clients.map((c) => `<option value="${c.id}">${escapeHtml(c.clientName)}</option>`).join("");
-      select.value = state.activeClientId;
+      const q = $("clientSearch")?.value.trim().toLowerCase() || "";
+      const filtered = state.clients.filter((c) => {
+        const blob = [c.clientName, ...(c.accounts || []).flatMap((a) => [a.acc, a.name])].join(" ").toLowerCase();
+        return !q || blob.includes(q);
+      });
+      const options = filtered.length ? filtered : state.clients;
+      if (q && filtered.length && !filtered.some((c) => c.id === state.activeClientId)) {
+        state.activeClientId = filtered[0].id;
+        saveLocal();
+      }
+      select.innerHTML = options.map((c) => `<option value="${c.id}">${escapeHtml(c.clientName)}</option>`).join("");
+      select.value = options.some((c) => c.id === state.activeClientId) ? state.activeClientId : options[0]?.id || "";
     }
     function renderClientList() {
       const q = $("clientSearch").value.trim().toLowerCase();
@@ -646,32 +687,13 @@
         return !q || blob.includes(q);
       });
       const current = activeClient();
-      if (!q) {
-        const t = current ? totalsForClient(current) : { cash: 0, units: 0 };
-        $("clientList").innerHTML = `
-          <div class="client-item active">
-            <div class="min-w-0 text-left">
-              <div class="font-black truncate">${escapeHtml(current?.clientName || "尚無客戶")}</div>
-              <div class="text-xs muted font-bold">${(current?.accounts || []).length} 筆標的 · 現金 ${numberText(t.cash)} · 單位/轉投資 ${numberText(t.units)}</div>
-            </div>
-          </div>
-          <select id="clientQuickSelect" class="field">
-            ${state.clients.map((c) => `<option value="${c.id}" ${c.id === state.activeClientId ? "selected" : ""}>${escapeHtml(c.clientName)}</option>`).join("")}
-          </select>
-          <div class="text-xs muted font-bold">共有 ${state.clients.length} 位客戶。需要找特定客戶時，請使用上方搜尋。</div>`;
-        return;
-      }
-      const list = filtered.slice(0, 8);
-      $("clientList").innerHTML = list.map((c) => {
-        const t = totalsForClient(c);
-        return `<button class="client-item ${c.id === state.activeClientId ? "active" : ""}" data-client="${c.id}">
-          <div class="min-w-0 text-left">
-            <div class="font-black truncate">${escapeHtml(c.clientName)}</div>
-            <div class="text-xs muted font-bold">${(c.accounts || []).length} 筆標的 · 現金 ${numberText(t.cash)} · 單位/轉投資 ${numberText(t.units)}</div>
-          </div>
-          <span class="text-slate-400 font-black">›</span>
-        </button>`;
-      }).join("") + (filtered.length > 8 ? `<div class="text-xs muted font-bold px-1">還有 ${filtered.length - 8} 筆，請輸入更完整的關鍵字縮小範圍。</div>` : "");
+      const t = current ? totalsForClient(current) : { cash: 0, units: 0 };
+      $("clientList").innerHTML = `
+        <div class="text-xs muted font-bold">
+          ${q ? `搜尋到 ${filtered.length} 位客戶` : `共有 ${state.clients.length} 位客戶`} ·
+          目前：${escapeHtml(current?.clientName || "尚無客戶")} ·
+          ${(current?.accounts || []).length} 筆標的 · 現金 ${numberText(t.cash)} · 單位/轉投資 ${numberText(t.units)}
+        </div>`;
     }
     function renderReportPreview() {
       const client = activeClient();
@@ -721,12 +743,12 @@
           </div>
           <div class="grid gap-4">
             <div>
-              <div class="font-black mb-2">保單與標的總覽</div>
-              <table><thead><tr><th>保單</th><th>基金標的</th><th>基準日單位數</th><th>投入金額</th><th>年度合計</th></tr></thead><tbody>${accountRows}</tbody></table>
-            </div>
-            <div>
               <div class="font-black mb-2">每月撥回明細</div>
               <div style="overflow:auto;"><table><thead><tr><th>保單</th><th>基金標的</th>${monthHeader}</tr></thead><tbody>${monthRows}</tbody></table></div>
+            </div>
+            <div>
+              <div class="font-black mb-2">保單與標的總覽</div>
+              <table><thead><tr><th>保單</th><th>基金標的</th><th>基準日單位數</th><th>投入金額</th><th>年度合計</th></tr></thead><tbody>${accountRows}</tbody></table>
             </div>
           </div>
           </div>
@@ -974,7 +996,7 @@
       state.clients = normalizeClients(data.clients || []);
       state.products = data.products || [];
       state.reportBg = data.reportBg || "";
-      state.reportBgOpacity = typeof data.reportBgOpacity === "number" ? data.reportBgOpacity : 0.18;
+      state.reportBgOpacity = typeof data.reportBgOpacity === "number" ? Math.max(0.32, data.reportBgOpacity) : 0.32;
       if (!state.clients.length) state.clients = [createEmptyClient()];
       state.activeClientId = state.clients[0].id;
       state.batchRows = [];
@@ -1052,7 +1074,11 @@
         const div = row?.dividends.find((d) => d.id === e.target.dataset.div);
         if (div) div[action === "div-month" ? "month" : "amount"] = e.target.value;
       }
-      if (e.target.id === "clientSearch") renderClientList();
+      if (e.target.id === "clientSearch") {
+        renderClientSelectors();
+        renderClientList();
+        renderReportPreview();
+      }
       if (e.target.dataset.monthRow !== undefined) {
         const client = activeClient();
         const row = client.rawMonthlyData[Number(e.target.dataset.monthRow)];
@@ -1090,6 +1116,7 @@
     });
 
     $("clientSelect").addEventListener("change", (e) => { state.activeClientId = e.target.value; saveLocal(); render(); });
+    $("clearClientSearchBtn").addEventListener("click", () => { $("clientSearch").value = ""; renderClientSelectors(); renderClientList(); renderReportPreview(); });
     $("parseBatchBtn").addEventListener("click", parseBatch);
     $("applyBatchBtn").addEventListener("click", applyBatch);
     $("clearBatchBtn").addEventListener("click", () => { $("batchText").value = ""; state.batchRows = []; renderBatchRows(); });
@@ -1125,7 +1152,7 @@
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
-      reader.onload = () => { state.reportBg = reader.result; markDirty(); renderReportPreview(); };
+      reader.onload = () => { state.reportBg = reader.result; markDirty(); renderReportPreview(); renderPageBackground(); };
       reader.readAsDataURL(file);
       e.target.value = "";
     });
@@ -1133,11 +1160,13 @@
       state.reportBg = "";
       markDirty();
       renderReportPreview();
+      renderPageBackground();
     });
     $("reportBgOpacity").addEventListener("input", (e) => {
-      state.reportBgOpacity = parseFloat(e.target.value) || 0.18;
+      state.reportBgOpacity = parseFloat(e.target.value) || 0.32;
       markDirty();
       renderReportPreview();
+      renderPageBackground();
     });
     $("saveClientEdit").addEventListener("click", () => {
       const client = activeClient();
