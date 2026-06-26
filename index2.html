@@ -120,7 +120,7 @@
     .field:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
     .muted { color: var(--muted); }
     .grid-kpi {
-      display: grid;
+      display: none;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px;
       margin-bottom: 16px;
@@ -147,8 +147,18 @@
       padding: 38px;
       border-radius: 0;
       box-shadow: none;
+      position: relative;
+      overflow: hidden;
     }
     .report-card.screen { width: 100%; min-height: auto; border-radius: 10px; box-shadow: 0 10px 25px rgba(15,23,42,.05); }
+    .report-bg-layer {
+      position: absolute;
+      inset: 0;
+      background-size: cover;
+      background-position: center;
+      z-index: 0;
+    }
+    .report-content { position: relative; z-index: 1; }
     .report-head {
       display: flex;
       justify-content: space-between;
@@ -188,7 +198,7 @@
     th, td { border-bottom: 1px solid #e2e8f0; padding: 9px 10px; text-align: left; }
     th { background: #f8fafc; color: #475569; font-size: 12px; font-weight: 950; }
     td { font-size: 13px; font-weight: 700; }
-    .client-list { display: grid; gap: 8px; max-height: 560px; overflow: auto; }
+    .client-list { display: grid; gap: 8px; max-height: 360px; overflow: auto; }
     .client-item {
       border: 1px solid var(--line);
       background: #fff;
@@ -270,6 +280,10 @@
       .side { position: relative; height: auto; }
       .two-col, .grid-kpi { grid-template-columns: 1fr; }
       .topbar { flex-direction: column; }
+      .main { padding: 14px; }
+      .report-card { padding: 22px; }
+      .report-title { font-size: 24px; }
+      .client-name { font-size: 26px; }
     }
   </style>
 </head>
@@ -324,9 +338,18 @@
                 <div class="text-sm font-black text-slate-500">報表預覽</div>
                 <select id="clientSelect" class="field mt-1"></select>
               </div>
-              <div class="flex gap-2">
+              <div class="flex gap-2 flex-wrap justify-end">
+                <input id="reportBgInput" type="file" accept="image/*" hidden />
+                <button id="reportBgBtn" class="btn ghost">新增背景照片</button>
+                <button id="clearReportBgBtn" class="btn ghost">移除背景</button>
                 <button id="downloadCurrentPng" class="btn primary">下載此客戶圖檔</button>
               </div>
+            </div>
+            <div id="reportBgControls" class="mb-3 hidden">
+              <label class="text-xs font-black text-slate-500 flex items-center gap-2">
+                背景透明度
+                <input id="reportBgOpacity" type="range" min="0.08" max="0.45" step="0.01" value="0.18" style="width: 180px;" />
+              </label>
             </div>
             <div id="reportPreview" class="report-card screen"></div>
           </div>
@@ -438,6 +461,8 @@
       activeClientId: "",
       batchRows: [],
       imageRef: "",
+      reportBg: "",
+      reportBgOpacity: 0.18,
       dirty: false,
       tab: "dashboard"
     };
@@ -513,7 +538,9 @@
         clients: state.clients,
         products: state.products,
         activeClientId: state.activeClientId,
-        imageRef: state.imageRef
+        imageRef: state.imageRef,
+        reportBg: state.reportBg,
+        reportBgOpacity: state.reportBgOpacity
       }));
     }
     function loadLocal() {
@@ -525,6 +552,8 @@
         state.products = data.products || [];
         state.activeClientId = data.activeClientId || state.clients[0]?.id || "";
         state.imageRef = data.imageRef || "";
+        state.reportBg = data.reportBg || "";
+        state.reportBgOpacity = typeof data.reportBgOpacity === "number" ? data.reportBgOpacity : 0.18;
         return true;
       } catch {
         return false;
@@ -612,10 +641,27 @@
     }
     function renderClientList() {
       const q = $("clientSearch").value.trim().toLowerCase();
-      const list = state.clients.filter((c) => {
+      const filtered = state.clients.filter((c) => {
         const blob = [c.clientName, ...(c.accounts || []).flatMap((a) => [a.acc, a.name])].join(" ").toLowerCase();
         return !q || blob.includes(q);
       });
+      const current = activeClient();
+      if (!q) {
+        const t = current ? totalsForClient(current) : { cash: 0, units: 0 };
+        $("clientList").innerHTML = `
+          <div class="client-item active">
+            <div class="min-w-0 text-left">
+              <div class="font-black truncate">${escapeHtml(current?.clientName || "尚無客戶")}</div>
+              <div class="text-xs muted font-bold">${(current?.accounts || []).length} 筆標的 · 現金 ${numberText(t.cash)} · 單位/轉投資 ${numberText(t.units)}</div>
+            </div>
+          </div>
+          <select id="clientQuickSelect" class="field">
+            ${state.clients.map((c) => `<option value="${c.id}" ${c.id === state.activeClientId ? "selected" : ""}>${escapeHtml(c.clientName)}</option>`).join("")}
+          </select>
+          <div class="text-xs muted font-bold">共有 ${state.clients.length} 位客戶。需要找特定客戶時，請使用上方搜尋。</div>`;
+        return;
+      }
+      const list = filtered.slice(0, 8);
       $("clientList").innerHTML = list.map((c) => {
         const t = totalsForClient(c);
         return `<button class="client-item ${c.id === state.activeClientId ? "active" : ""}" data-client="${c.id}">
@@ -625,11 +671,14 @@
           </div>
           <span class="text-slate-400 font-black">›</span>
         </button>`;
-      }).join("");
+      }).join("") + (filtered.length > 8 ? `<div class="text-xs muted font-bold px-1">還有 ${filtered.length - 8} 筆，請輸入更完整的關鍵字縮小範圍。</div>` : "");
     }
     function renderReportPreview() {
       const client = activeClient();
       $("reportPreview").innerHTML = client ? reportHtml(client, true) : emptyState("請先新增或匯入客戶資料");
+      $("reportBgControls").classList.toggle("hidden", !state.reportBg);
+      $("clearReportBgBtn").disabled = !state.reportBg;
+      $("reportBgOpacity").value = state.reportBgOpacity;
     }
     function reportHtml(client, screen = false) {
       const t = totalsForClient(client);
@@ -646,8 +695,11 @@
       }).join("");
       const monthHeader = rows.map((r) => `<th>${escapeHtml(r.month)}</th>`).join("");
       const monthRows = accounts.map((acc) => `<tr><td>${escapeHtml(acc.acc || "-")}</td><td>${escapeHtml(acc.name || "-")}</td>${rows.map((r) => `<td>${numberText(r[acc.id] || 0)}</td>`).join("")}</tr>`).join("");
+      const bgLayer = state.reportBg ? `<div class="report-bg-layer" style="background-image:url('${state.reportBg}'); opacity:${state.reportBgOpacity};"></div>` : "";
       return `
         <div class="${screen ? "" : "report-card"}">
+          ${bgLayer}
+          <div class="report-content">
           <div class="report-head">
             <div>
               <div class="report-title">${escapeHtml(client.reportTitle || "投資配息追蹤報表")}</div>
@@ -676,6 +728,7 @@
               <div class="font-black mb-2">每月撥回明細</div>
               <div style="overflow:auto;"><table><thead><tr><th>保單</th><th>基金標的</th>${monthHeader}</tr></thead><tbody>${monthRows}</tbody></table></div>
             </div>
+          </div>
           </div>
         </div>`;
     }
@@ -885,6 +938,8 @@
         source: "index2",
         clients: state.clients,
         products: state.products,
+        reportBg: state.reportBg,
+        reportBgOpacity: state.reportBgOpacity,
         globalFontScales: { global: 1, header: 1, kpi: 1, chart: 1, table: 1, events: 1 }
       };
     }
@@ -918,6 +973,8 @@
     function importBackupData(data) {
       state.clients = normalizeClients(data.clients || []);
       state.products = data.products || [];
+      state.reportBg = data.reportBg || "";
+      state.reportBgOpacity = typeof data.reportBgOpacity === "number" ? data.reportBgOpacity : 0.18;
       if (!state.clients.length) state.clients = [createEmptyClient()];
       state.activeClientId = state.clients[0].id;
       state.batchRows = [];
@@ -1006,6 +1063,11 @@
     });
     document.addEventListener("change", (e) => {
       const action = e.target.dataset.action;
+      if (e.target.id === "clientQuickSelect") {
+        state.activeClientId = e.target.value;
+        saveLocal();
+        render();
+      }
       if (action === "row-client") {
         const row = state.batchRows.find((r) => r.id === e.target.dataset.id);
         if (row) {
@@ -1057,6 +1119,25 @@
       const reader = new FileReader();
       reader.onload = () => { state.imageRef = reader.result; markDirty(); renderImageReference(); };
       reader.readAsDataURL(file);
+    });
+    $("reportBgBtn").addEventListener("click", () => $("reportBgInput").click());
+    $("reportBgInput").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => { state.reportBg = reader.result; markDirty(); renderReportPreview(); };
+      reader.readAsDataURL(file);
+      e.target.value = "";
+    });
+    $("clearReportBgBtn").addEventListener("click", () => {
+      state.reportBg = "";
+      markDirty();
+      renderReportPreview();
+    });
+    $("reportBgOpacity").addEventListener("input", (e) => {
+      state.reportBgOpacity = parseFloat(e.target.value) || 0.18;
+      markDirty();
+      renderReportPreview();
     });
     $("saveClientEdit").addEventListener("click", () => {
       const client = activeClient();
