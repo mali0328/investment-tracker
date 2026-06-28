@@ -276,6 +276,7 @@
 
       const getSym = (curr) => curr === 'USD' ? 'US$' : 'NT$';
       const globalSym = (() => { const currs = [...new Set(accounts.map(a => a.currency || 'TWD'))]; return currs.length === 1 ? getSym(currs[0]) : '$'; })();
+      const fixedMonthLabel = (index) => `${index + 1}月`;
       
       const parseChineseAmount = (val) => {
         if (!val) return 0;
@@ -415,7 +416,7 @@
       let currentCum = 0;
       const monthlyData = rawMonthlyData.map((d, idx) => {
         let sumThisMonth = 0;
-        const newD = { month: d.month };
+        const newD = { month: fixedMonthLabel(idx) };
         
         const groupSumsThisMonth = {};
         groupedByPolicy.forEach(group => {
@@ -552,6 +553,44 @@
         return bestMatch;
       };
 
+      const hasFilledBatchValue = (value) => String(value ?? '').trim() !== '';
+      const getBatchRowReview = (row, overrides = {}) => {
+        const draft = { ...row, ...overrides };
+        const targetClient = clients.find(c => c.id === draft.selectedClientId);
+        const targetAcc = targetClient?.accounts?.find(a => a.id === draft.selectedAccountId);
+        const dividends = draft.dividends || [];
+
+        if (!draft.selectedClientId || !draft.selectedAccountId) {
+          return {
+            status: 'warning',
+            message: '請先指定對應客戶與保單'
+          };
+        }
+
+        if (dividends.length === 0) {
+          return {
+            status: 'warning',
+            message: '已指定保單，請補上配息月份與金額後才會變 OK'
+          };
+        }
+
+        const hasIncompleteDividend = dividends.some(div =>
+          !hasFilledBatchValue(div.month) || !hasFilledBatchValue(div.amount)
+        );
+
+        if (hasIncompleteDividend) {
+          return {
+            status: 'warning',
+            message: '尚有配息月份或金額未填完整'
+          };
+        }
+
+        return {
+          status: 'success',
+          message: `已指定：${targetClient?.clientName || '客戶'} [${targetAcc?.acc || '保單'}]`
+        };
+      };
+
       const handleParseBatchDividendInput = (text) => {
         if (!text.trim()) {
           setParsedBatchUpdateRows([]);
@@ -577,6 +616,7 @@
             return {
               lineIndex: idx + 1,
               rawText: cleanLine,
+              policyNoInput: parts[0] || cleanLine,
               status: 'error',
               message: '格式欄位不足（需包含：保單號碼, 客戶姓名, 基金標的, 最新基準日單位數, 月份, 配息金額, 給付方式）',
               selectedClientId: '',
@@ -602,6 +642,7 @@
             return {
               lineIndex: idx + 1,
               rawText: cleanLine,
+              policyNoInput,
               status: 'error',
               message: `❌ 錯誤：保單號碼 [${policyNoInput}] 不存在於系統中！資料已被鎖定，無法進行批次更新。`,
               selectedClientId: '',
@@ -637,6 +678,7 @@
             return {
               lineIndex: idx + 1,
               rawText: cleanLine,
+              policyNoInput,
               status: 'error',
               message: '配息月份與金額解析失敗，請確認最後配息三項欄位是否填寫正確',
               selectedClientId: match ? match.clientId : '',
@@ -649,6 +691,7 @@
           return {
             lineIndex: idx + 1,
             rawText: cleanLine,
+            policyNoInput,
             status: match ? 'success' : 'warning',
             message: match 
               ? `智慧媒合成功：${match.clientName} 的保單 [${match.policyNo}]`
@@ -676,14 +719,14 @@
       };
 
       const handleApplyBatchDividendUpdates = () => {
-        // 二次保險防線：檢查解析結果是否依然包含錯誤保單
-        const hasCriticalError = parsedBatchUpdateRows.some(r => r.status === 'error');
-        if (hasCriticalError) {
-          showToast('❌ 無法更新！名單中包含錯誤或不存在的保單資料，請先修正或刪除錯誤卡片。', 'error');
+        // 二次保險防線：所有批次資料都完整變成 OK 後，才允許寫入。
+        const hasIncompleteRows = parsedBatchUpdateRows.some(r => r.status !== 'success');
+        if (hasIncompleteRows) {
+          showToast('⚠️ 還有批次資料未完成，請確認每一列都是 OK 後再寫入。', 'warning');
           return;
         }
 
-        const validRows = parsedBatchUpdateRows.filter(r => r.selectedClientId && r.selectedAccountId);
+        const validRows = parsedBatchUpdateRows.filter(r => r.status === 'success');
         if (validRows.length === 0) {
           showToast('目前沒有可供更新的成功匹配或手動對應資料！', 'error');
           return;
@@ -709,7 +752,10 @@
             updatesForClient.forEach(row => {
               const accountId = row.selectedAccountId;
               row.dividends.forEach(div => {
-                const monthIdx = updatedMonthlyData.findIndex(m => m.month === div.month);
+                const monthNumber = parseInt(String(div.month || '').replace(/[^0-9]/g, ''), 10);
+                const monthIdx = monthNumber >= 1 && monthNumber <= 12
+                  ? monthNumber - 1
+                  : updatedMonthlyData.findIndex(m => m.month === div.month);
                 if (monthIdx !== -1) {
                   updatedMonthlyData[monthIdx] = {
                     ...updatedMonthlyData[monthIdx],
@@ -739,14 +785,16 @@
           if (row.lineIndex !== lineIndex) return row;
           const targetClient = clients.find(c => c.id === clientId);
           const firstAccount = targetClient?.accounts?.[0]?.id || '';
+          const review = getBatchRowReview(row, {
+            selectedClientId: clientId,
+            selectedAccountId: firstAccount
+          });
           return {
             ...row,
             selectedClientId: clientId,
             selectedAccountId: firstAccount,
-            status: clientId && firstAccount ? 'success' : 'warning',
-            message: clientId && firstAccount 
-              ? `手動指定：${targetClient.clientName}` 
-              : '請選擇對應的保單 / 基金標的'
+            status: review.status,
+            message: review.message
           };
         }));
       };
@@ -754,15 +802,12 @@
       const handleRowAccountChange = (lineIndex, accountId) => {
         setParsedBatchUpdateRows(prev => prev.map(row => {
           if (row.lineIndex !== lineIndex) return row;
-          const targetClient = clients.find(c => c.id === row.selectedClientId);
-          const targetAcc = targetClient?.accounts?.find(a => a.id === accountId);
+          const review = getBatchRowReview(row, { selectedAccountId: accountId });
           return {
             ...row,
             selectedAccountId: accountId,
-            status: row.selectedClientId && accountId ? 'success' : 'warning',
-            message: row.selectedClientId && accountId 
-              ? `手動指定：${targetClient.clientName} [${targetAcc?.acc || '未命名保單'}]` 
-              : '請選擇對應的保單 / 基金標的'
+            status: review.status,
+            message: review.message
           };
         }));
       };
@@ -781,31 +826,38 @@
             if (div.id !== divId) return div;
             return { ...div, [field]: value };
           });
-          return { ...row, dividends: updatedDividends };
+          const review = getBatchRowReview(row, { dividends: updatedDividends });
+          return { ...row, dividends: updatedDividends, status: review.status, message: review.message };
         }));
       };
 
       const handleDeleteRowDividend = (lineIndex, divId) => {
         setParsedBatchUpdateRows(prev => prev.map(row => {
           if (row.lineIndex !== lineIndex) return row;
-          return { ...row, dividends: row.dividends.filter(d => d.id !== divId) };
+          const updatedDividends = row.dividends.filter(d => d.id !== divId);
+          const review = getBatchRowReview(row, { dividends: updatedDividends });
+          return { ...row, dividends: updatedDividends, status: review.status, message: review.message };
         }));
       };
 
       const handleAddRowDividend = (lineIndex) => {
         setParsedBatchUpdateRows(prev => prev.map(row => {
           if (row.lineIndex !== lineIndex) return row;
+          const updatedDividends = [
+            ...row.dividends,
+            {
+              id: Date.now() + Math.random().toString(36).substr(2, 5),
+              month: '1月',
+              amount: '',
+              type: CASH_TYPE
+            }
+          ];
+          const review = getBatchRowReview(row, { dividends: updatedDividends });
           return {
             ...row,
-            dividends: [
-              ...row.dividends,
-              {
-                id: Date.now() + Math.random().toString(36).substr(2, 5),
-                month: '1月',
-                amount: 0,
-                type: CASH_TYPE
-              }
-            ]
+            dividends: updatedDividends,
+            status: review.status,
+            message: review.message
           };
         }));
       };
@@ -1577,10 +1629,11 @@
                               const dividendSummary = row.dividends && row.dividends.length > 0
                                 ? row.dividends.map(div => `${div.month} ${Number(div.amount || 0).toLocaleString()}`).join(' / ')
                                 : 'no dividend';
+                              const sourcePolicyNo = String(row.policyNoInput || String(row.rawText || '').split(/[,，\t|/]+/)[0] || `第 ${row.lineIndex} 行`).trim();
                               return (
                                 <details
                                   key={row.lineIndex} 
-                                  open={row.status !== 'success'}
+                                  defaultOpen={row.status !== 'success'}
                                   className={`rounded-xl border shadow-sm transition-all bg-white overflow-hidden group ${
                                     row.status === 'success' 
                                       ? 'border-emerald-200 bg-emerald-50/10' 
@@ -1597,7 +1650,7 @@
                                       </span>
                                       <div className="min-w-0">
                                         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-bold text-slate-800">
-                                          <span>Line {row.lineIndex}</span>
+                                          <span>輸入保單 {sourcePolicyNo}</span>
                                           <span className="text-slate-300">|</span>
                                           <span>{selectedClient?.clientName || 'No client'}</span>
                                           <span className="text-slate-300">|</span>
@@ -1656,7 +1709,6 @@
                                         value={row.selectedClientId}
                                         onChange={e => handleRowClientChange(row.lineIndex, e.target.value)}
                                         style={{ ...selectStyle, padding: '6px 8px', fontSize: '12px' }}
-                                        disabled={row.status === 'error' && row.message.includes('不存在')}
                                       >
                                         <option value="">-- 手動指定客戶 --</option>
                                         {clients.map(c => (
@@ -1670,7 +1722,7 @@
                                         value={row.selectedAccountId}
                                         onChange={e => handleRowAccountChange(row.lineIndex, e.target.value)}
                                         style={{ ...selectStyle, padding: '6px 8px', fontSize: '12px' }}
-                                        disabled={!row.selectedClientId || (row.status === 'error' && row.message.includes('不存在'))}
+                                        disabled={!row.selectedClientId}
                                       >
                                         <option value="">-- 選擇保單/基金 --</option>
                                         {selectedClient?.accounts?.map(acc => (
@@ -1692,7 +1744,6 @@
                                         value={row.units} 
                                         onChange={e => handleRowUnitsChange(row.lineIndex, e.target.value)}
                                         style={{ ...inputStyle, padding: '4px 8px', fontSize: '12px', width: '120px' }}
-                                        disabled={row.status === 'error' && row.message.includes('不存在')}
                                       />
                                     </div>
                                   </div>
@@ -1704,7 +1755,6 @@
                                       <button 
                                         onClick={() => handleAddRowDividend(row.lineIndex)}
                                         className="text-[10px] text-blue-600 hover:text-blue-800 font-bold bg-blue-50 px-2 py-0.5 rounded"
-                                        disabled={row.status === 'error' && row.message.includes('不存在')}
                                       >
                                         ➕ 增加月份
                                       </button>
@@ -1753,44 +1803,44 @@
                           </div>
 
                           {/* 警告與更新確認區 */}
-                          {parsedBatchUpdateRows.some(r => r.status === 'error') && (
+                          {parsedBatchUpdateRows.some(r => r.status !== 'success') && (
                             <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-semibold flex items-center gap-2">
-                              <span>⚠️</span> 系統偵測到未註冊的保單，更新功能已鎖定。請修正資料庫，或移除錯誤資料卡片。
+                              <span>⚠️</span> 尚有資料未完成或需確認，請讓每一列都變成 OK 後再批次寫入。
                             </div>
                           )}
 
                           <button 
                             onClick={handleApplyBatchDividendUpdates} 
                             disabled = {
-                              parsedBatchUpdateRows.some(r => r.status === 'error') || 
-                              !parsedBatchUpdateRows.some(r => r.selectedClientId && r.selectedAccountId)
+                              parsedBatchUpdateRows.some(r => r.status !== 'success') || 
+                              !parsedBatchUpdateRows.some(r => r.status === 'success')
                             }
                             style={{ 
                               width: '100%', 
                               marginTop: 'auto', 
                               background: (
-                                parsedBatchUpdateRows.some(r => r.status === 'error') || 
-                                !parsedBatchUpdateRows.some(r => r.selectedClientId && r.selectedAccountId)
+                                parsedBatchUpdateRows.some(r => r.status !== 'success') || 
+                                !parsedBatchUpdateRows.some(r => r.status === 'success')
                               ) ? '#cbd5e1' : '#059669', 
                               color: '#fff', 
                               border: 'none', 
                               padding: '14px', 
                               borderRadius: '12px', 
                               cursor: (
-                                parsedBatchUpdateRows.some(r => r.status === 'error') || 
-                                !parsedBatchUpdateRows.some(r => r.selectedClientId && r.selectedAccountId)
+                                parsedBatchUpdateRows.some(r => r.status !== 'success') || 
+                                !parsedBatchUpdateRows.some(r => r.status === 'success')
                               ) ? 'not-allowed' : 'pointer', 
                               fontWeight: 'bold', 
                               fontSize: '15px', 
                               transition: 'background 0.2s',
                               boxShadow: (
-                                parsedBatchUpdateRows.some(r => r.status === 'error') || 
-                                !parsedBatchUpdateRows.some(r => r.selectedClientId && r.selectedAccountId)
+                                parsedBatchUpdateRows.some(r => r.status !== 'success') || 
+                                !parsedBatchUpdateRows.some(r => r.status === 'success')
                               ) ? 'none' : '0 4px 10px rgba(5,150,105,0.15)'
                             }}
                           >
-                            {parsedBatchUpdateRows.some(r => r.status === 'error') 
-                              ? '❌ 包含錯誤保單，鎖定更新' 
+                            {parsedBatchUpdateRows.some(r => r.status !== 'success') 
+                              ? '⚠️ 尚有資料未完成，鎖定更新' 
                               : '✅ 確認核對無誤，一鍵批次寫入系統'}
                           </button>
                         </div>
@@ -1963,7 +2013,9 @@
                     {rawMonthlyData.map((row, index) => (
                       <tr key={index} style={{ borderBottom: '1px solid #f1f5f9', transition: 'background 0.2s' }}>
                         <td style={{ padding: '12px 16px' }}>
-                          <input value={row.month} onChange={e => handleDataChange(index, 'month', e.target.value)} style={{ ...inputStyle, padding: '8px 12px' }} />
+                          <div style={{ ...inputStyle, padding: '8px 12px', background: '#eef2f7', color: '#334155', fontWeight: '900', textAlign: 'center', cursor: 'default' }}>
+                            {fixedMonthLabel(index)}
+                          </div>
                         </td>
                         {accounts.map(acc => {
                           const currentType = row[`${acc.id}_type`] || CASH_TYPE;
